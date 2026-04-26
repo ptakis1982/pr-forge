@@ -1,0 +1,19 @@
+{
+  "name": "PR Forge",
+  "short_name": "PR Forge",
+  "description": "Track weightlifting PRs, videos, progress, and friends.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f5f7fa",
+  "theme_color": "#172033",
+  "icons": [
+    {
+      "src": "./icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
