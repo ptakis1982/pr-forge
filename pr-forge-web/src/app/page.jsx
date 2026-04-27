@@ -53,6 +53,8 @@ export default function HomePage() {
   const [dataLoading, setDataLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [tab, setTab] = useState("Home");
+  const [progressExerciseId, setProgressExerciseId] = useState("");
+  const [progressMode, setProgressMode] = useState("actual");
   const [status, setStatus] = useState("");
 
   useEffect(() => {
@@ -320,6 +322,10 @@ export default function HomePage() {
             dataLoading={dataLoading}
             saving={saving}
             status={status}
+            progressExerciseId={progressExerciseId}
+            progressMode={progressMode}
+            onProgressExerciseChange={setProgressExerciseId}
+            onProgressModeChange={setProgressMode}
             onSaveLift={saveLift}
             onSignOut={signOut}
           />
@@ -339,7 +345,21 @@ export default function HomePage() {
   );
 }
 
-function Dashboard({ tab, profile, exercises, lifts, dataLoading, saving, status, onSaveLift, onSignOut }) {
+function Dashboard({
+  tab,
+  profile,
+  exercises,
+  lifts,
+  dataLoading,
+  saving,
+  status,
+  progressExerciseId,
+  progressMode,
+  onProgressExerciseChange,
+  onProgressModeChange,
+  onSaveLift,
+  onSignOut
+}) {
   if (tab === "Add") {
     return (
       <AddLiftPanel
@@ -354,6 +374,20 @@ function Dashboard({ tab, profile, exercises, lifts, dataLoading, saving, status
 
   if (tab === "History") {
     return <HistoryPanel profile={profile} lifts={lifts} dataLoading={dataLoading} />;
+  }
+
+  if (tab === "Progress") {
+    return (
+      <ProgressPanel
+        profile={profile}
+        exercises={exercises}
+        lifts={lifts}
+        selectedExerciseId={progressExerciseId || exercises[0]?.id || ""}
+        mode={progressMode}
+        onExerciseChange={onProgressExerciseChange}
+        onModeChange={onProgressModeChange}
+      />
+    );
   }
 
   if (tab !== "Home") {
@@ -525,6 +559,118 @@ function HistoryPanel({ profile, lifts, dataLoading }) {
   );
 }
 
+function ProgressPanel({ profile, exercises, lifts, selectedExerciseId, mode, onExerciseChange, onModeChange }) {
+  const exerciseLifts = lifts
+    .filter((lift) => lift.exercise_id === selectedExerciseId)
+    .sort((a, b) => String(a.date).localeCompare(String(b.date)) || String(a.created_at).localeCompare(String(b.created_at)));
+  const prs = exerciseLifts.filter((lift) => lift.is_pr).slice().reverse();
+  const currentPr = prs[0];
+  const previousPr = prs[1];
+  const diff = currentPr && previousPr ? Number(currentPr.normalized_weight_kg) - Number(previousPr.normalized_weight_kg) : 0;
+  const best = bestByReps(exerciseLifts);
+
+  return (
+    <section className="panel">
+      <div className="section-head">
+        <div>
+          <h1>Progress</h1>
+          <p className="muted">Track PRs, best rep maxes, and actual vs predicted progress.</p>
+        </div>
+      </div>
+
+      <div className="split">
+        <Field label="Exercise">
+          <select value={selectedExerciseId} onChange={(event) => onExerciseChange(event.target.value)}>
+            {exercises.map((exercise) => <option key={exercise.id} value={exercise.id}>{exercise.name}</option>)}
+          </select>
+        </Field>
+        <Field label="Chart value">
+          <select value={mode} onChange={(event) => onModeChange(event.target.value)}>
+            <option value="actual">Actual lifted weight</option>
+            <option value="predicted">Predicted 100% / estimated 1RM</option>
+          </select>
+        </Field>
+      </div>
+
+      <div className="stats-grid">
+        <div className="stat-card"><span>Current PR</span><strong>{currentPr ? displayWeight(currentPr.normalized_weight_kg, profile.preferred_unit) : "-"}</strong></div>
+        <div className="stat-card"><span>Last PR date</span><strong>{currentPr ? displayDate(currentPr.date) : "-"}</strong></div>
+        <div className="stat-card"><span>From previous PR</span><strong>{diff > 0 ? `+${displayWeight(diff, profile.preferred_unit)}` : "-"}</strong></div>
+      </div>
+
+      <h2>Best by reps</h2>
+      <div className="stats-grid">
+        {[1, 3, 5].map((reps) => (
+          <div className="stat-card" key={reps}>
+            <span>{reps}RM</span>
+            <strong>{best[reps] ? displayWeight(best[reps].normalized_weight_kg, profile.preferred_unit) : "-"}</strong>
+          </div>
+        ))}
+      </div>
+
+      <h2>Progress chart</h2>
+      {exerciseLifts.length ? (
+        <ProgressChart lifts={exerciseLifts} unit={profile.preferred_unit} mode={mode} />
+      ) : (
+        <p className="empty">No entries for this exercise yet.</p>
+      )}
+    </section>
+  );
+}
+
+function ProgressChart({ lifts, unit, mode }) {
+  const width = 760;
+  const height = 320;
+  const pad = 92;
+  const bottomPad = 76;
+  const topPad = 52;
+  const plotBottom = height - bottomPad;
+  const values = lifts.map((lift) => chartLiftValue(lift, mode));
+  const max = Math.max(...values);
+  const min = Math.min(...values);
+  const range = Math.max(max - min, 1);
+  const valueToY = (value) => plotBottom - ((value - min) / range) * (plotBottom - topPad);
+  const points = lifts.map((lift, index) => {
+    const value = chartLiftValue(lift, mode);
+    return {
+      x: pad + (index / Math.max(lifts.length - 1, 1)) * (width - pad * 2),
+      y: valueToY(value),
+      lift,
+      value
+    };
+  });
+  const mid = (min + max) / 2;
+  const grid = [
+    { y: valueToY(max), label: displayWeight(max, unit) },
+    { y: valueToY(mid), label: displayWeight(mid, unit) },
+    { y: valueToY(min), label: displayWeight(min, unit) }
+  ];
+  const d = points.map((point, index) => `${index ? "L" : "M"} ${point.x} ${point.y}`).join(" ");
+
+  return (
+    <svg className="chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Progress chart">
+      <rect x="0" y="0" width={width} height={height} fill="#fbfcfd" />
+      {grid.map((tick, index) => <line key={index} x1={pad} y1={tick.y} x2={width - pad} y2={tick.y} stroke="#e8edf3" strokeWidth="1" />)}
+      <line x1={pad} y1={plotBottom} x2={width - pad} y2={plotBottom} stroke="#dbe2ea" strokeWidth="1.5" />
+      <line x1={pad} y1={topPad} x2={pad} y2={plotBottom} stroke="#dbe2ea" strokeWidth="1.5" />
+      <path d={d} fill="none" stroke="#0d766e" strokeWidth="4" />
+      {points.map((point) => (
+        <circle key={point.lift.id} cx={point.x} cy={point.y} r="5" fill="#ad3e32">
+          <title>{displayDate(point.lift.date)}: {displayWeight(point.value, unit)}</title>
+        </circle>
+      ))}
+      {points.map((point, index) => {
+        const first = index === 0;
+        const last = index === points.length - 1;
+        const anchor = first ? "start" : last ? "end" : "middle";
+        const x = point.x + (first ? 6 : last ? -6 : 0);
+        return <text key={point.lift.id} x={x} y={height - 28} textAnchor={anchor} fill="#657286" fontSize="13">{formatChartDate(point.lift.date)}</text>;
+      })}
+      {grid.map((tick, index) => <text key={index} x={pad - 18} y={tick.y + 5} textAnchor="end" fill="#657286" fontSize="13">{tick.label}</text>)}
+    </svg>
+  );
+}
+
 function ProfilePanel({ title, description, profile, saving, status, onSave, onSignOut }) {
   const [form, setForm] = useState(profile || EMPTY_PROFILE);
 
@@ -660,6 +806,26 @@ function profileFromRow(row) {
 
 function isProfileComplete(profile) {
   return Boolean(profile?.name && profile?.bodyweight && profile?.country);
+}
+
+function bestByReps(lifts) {
+  return lifts.reduce((best, lift) => {
+    const reps = Number(lift.reps);
+    if (!best[reps] || Number(lift.normalized_weight_kg) > Number(best[reps].normalized_weight_kg)) {
+      best[reps] = lift;
+    }
+    return best;
+  }, {});
+}
+
+function chartLiftValue(lift, mode) {
+  return mode === "predicted" ? Number(lift.estimated_1rm_kg || lift.normalized_weight_kg) : Number(lift.normalized_weight_kg);
+}
+
+function formatChartDate(date) {
+  const parts = String(date).split("-");
+  if (parts.length !== 3) return String(date);
+  return `${parts[1]}-${parts[2]}`;
 }
 
 function cleanOptional(value) {
