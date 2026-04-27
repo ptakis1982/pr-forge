@@ -856,6 +856,7 @@ export default function HomePage() {
             onProgressExerciseChange={setProgressExerciseId}
             onProgressModeChange={setProgressMode}
             onSaveLift={saveLift}
+            onChangeTab={setTab}
             onSignOut={signOut}
           />
         )}
@@ -912,6 +913,7 @@ function Dashboard({
   onProgressExerciseChange,
   onProgressModeChange,
   onSaveLift,
+  onChangeTab,
   onSignOut
 }) {
   if (tab === "Add") {
@@ -1015,24 +1017,103 @@ function Dashboard({
   }
 
   return (
+    <HomeDashboard
+      profile={profile}
+      lifts={lifts}
+      workouts={workouts}
+      feedLifts={feedLifts}
+      onOpenHistory={() => onChangeTab("History")}
+      onOpenFriends={() => onChangeTab("Friends")}
+      onSignOut={onSignOut}
+    />
+  );
+}
+
+function HomeDashboard({ profile, lifts, workouts, feedLifts, onOpenHistory, onOpenFriends, onSignOut }) {
+  const recentPrs = lifts.filter((lift) => lift.is_pr).slice(0, 3);
+  const friendPrs = feedLifts.slice(0, 3);
+  const nudge = trainingNudge(lifts);
+
+  return (
     <div className="grid">
       <section className="panel">
-        <h1>Home</h1>
-        <p className="muted">Welcome back, {profile.nickname || profile.name}. Your live profile is now saved in Supabase.</p>
+        <div className="section-head">
+          <div>
+            <h1>Home</h1>
+            <p className="muted">Welcome back, {profile.nickname || profile.name}.</p>
+          </div>
+          <button className="btn secondary" onClick={onSignOut}>Sign out</button>
+        </div>
+
         <div className="profile-summary">
           <span>Bodyweight: {profile.bodyweight} {profile.preferred_unit}</span>
           <span>Country: {countryName(profile.country)}</span>
           {profile.club ? <span>Club: {profile.club}</span> : null}
           <span>Privacy: {privacyLabel(profile.privacy_setting)}</span>
         </div>
+      </section>
+
+      <section className="panel">
+        <div className="section-head">
+          <div>
+            <h2>Latest PRs</h2>
+            <p className="muted">Your most recent records.</p>
+          </div>
+          {recentPrs.length ? <button className="btn secondary" type="button" onClick={onOpenHistory}>History</button> : null}
+        </div>
+        {recentPrs.length ? (
+          <div className="list">
+            {recentPrs.map((lift) => <CompactLiftRow key={lift.id} lift={lift} unit={profile.preferred_unit} />)}
+          </div>
+        ) : (
+          <p className="empty">Your PRs will appear here after you log a record.</p>
+        )}
+      </section>
+
+      <section className="panel">
+        <div className="section-head">
+          <div>
+            <h2>Friends' recent PRs</h2>
+            <p className="muted">Latest three records from accepted friends.</p>
+          </div>
+          {friendPrs.length ? <button className="btn secondary" type="button" onClick={onOpenFriends}>Friends</button> : null}
+        </div>
+        {friendPrs.length ? (
+          <div className="list">
+            {friendPrs.map((lift) => <CompactLiftRow key={lift.id} lift={lift} unit={profile.preferred_unit} showPerson />)}
+          </div>
+        ) : (
+          <p className="empty">Friends' PRs will appear here.</p>
+        )}
+      </section>
+
+      <section className="panel">
+        <h2>Training nudge</h2>
+        <p className="muted">{nudge}</p>
         <div className="profile-summary">
           <span>{lifts.length} lift{lifts.length === 1 ? "" : "s"} logged</span>
-          <span>{lifts.filter((lift) => lift.is_pr).length} PR{lifts.filter((lift) => lift.is_pr).length === 1 ? "" : "s"}</span>
           <span>{workouts.length} workout{workouts.length === 1 ? "" : "s"} saved</span>
         </div>
-        <button className="btn secondary" onClick={onSignOut}>Sign out</button>
       </section>
     </div>
+  );
+}
+
+function CompactLiftRow({ lift, unit, showPerson = false }) {
+  return (
+    <article className="lift-row compact-row">
+      <div>
+        <div className="lift-title">
+          {showPerson ? `${displayPerson(lift.profiles)} - ` : ""}{lift.exercises?.name || "Exercise"}
+          {lift.is_pr ? <span className="badge">PR</span> : null}
+        </div>
+        <div className="meta">
+          <span>{displayWeight(lift.normalized_weight_kg, unit)}</span>
+          <span>{lift.reps} rep{Number(lift.reps) === 1 ? "" : "s"}</span>
+          <span>{displayDate(lift.date)}</span>
+        </div>
+      </div>
+    </article>
   );
 }
 
@@ -1926,6 +2007,25 @@ function bestTrainingBase(lifts, exerciseId, unit) {
   if (!bestKg) return "";
   const value = unit === "lb" ? bestKg / 0.45359237 : bestKg;
   return Math.round(value * 10) / 10;
+}
+
+function trainingNudge(lifts) {
+  const prs = lifts
+    .filter((lift) => lift.is_pr)
+    .slice()
+    .sort((a, b) => String(a.date).localeCompare(String(b.date)) || String(a.created_at).localeCompare(String(b.created_at)));
+
+  if (!prs.length) return "Choose a lift and put the first PR on the board.";
+
+  const oldest = prs[0];
+  const days = Math.max(0, Math.floor((Date.now() - new Date(`${oldest.date}T00:00:00`).getTime()) / 86400000));
+  const exercise = oldest.exercises?.name || "this lift";
+
+  if (days < 14) return `${exercise} had a recent PR. Keep it moving.`;
+  if (days < 45) return `Your last ${exercise} PR was ${days} days ago. Maybe it is warming up again.`;
+
+  const months = Math.max(1, Math.round(days / 30));
+  return `Your last ${exercise} PR was about ${months} month${months === 1 ? "" : "s"} ago. Maybe today is the day.`;
 }
 
 function workoutFormFromSource(workout, exerciseId, baseWeight, profile, existingRounds) {

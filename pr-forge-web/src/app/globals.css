@@ -204,6 +204,10 @@ button:disabled {
   background: white;
 }
 
+.compact-row {
+  padding: 10px 12px;
+}
+
 .lift-title {
   display: flex;
   gap: 8px;
