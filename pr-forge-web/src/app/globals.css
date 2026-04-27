@@ -182,6 +182,61 @@ button:disabled {
   font-weight: 720;
 }
 
+.list {
+  display: grid;
+  gap: 10px;
+}
+
+.lift-row {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: white;
+}
+
+.lift-title {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  font-weight: 850;
+}
+
+.meta {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: var(--soft);
+  color: #0f5f59;
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.badge.blue {
+  background: #e8eefb;
+  color: #243f7e;
+}
+
+.empty {
+  border: 1px dashed #b7c2cf;
+  border-radius: 8px;
+  padding: 18px;
+  color: var(--muted);
+}
+
 .btn {
   min-height: 42px;
   border-radius: 8px;

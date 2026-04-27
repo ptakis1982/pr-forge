@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabase";
+import { displayDate, displayWeight, estimatedMaxKg, kg } from "@/lib/format";
 
 const NAV = ["Home", "Add", "History", "Progress", "Friends", "Profile"];
 
@@ -46,7 +47,10 @@ const EMPTY_PROFILE = {
 export default function HomePage() {
   const [session, setSession] = useState(null);
   const [profile, setProfile] = useState(null);
+  const [exercises, setExercises] = useState([]);
+  const [lifts, setLifts] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [dataLoading, setDataLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [tab, setTab] = useState("Home");
   const [status, setStatus] = useState("");
@@ -58,7 +62,10 @@ export default function HomePage() {
       const { data } = await supabase.auth.getSession();
       if (cancelled) return;
       setSession(data.session);
-      if (data.session) await loadProfile(data.session);
+      if (data.session) {
+        await loadProfile(data.session);
+        await loadAppData(data.session);
+      }
       setLoading(false);
     }
 
@@ -69,8 +76,11 @@ export default function HomePage() {
       setStatus("");
       if (nextSession) {
         await loadProfile(nextSession);
+        await loadAppData(nextSession);
       } else {
         setProfile(null);
+        setExercises([]);
+        setLifts([]);
       }
       setLoading(false);
     });
@@ -96,6 +106,33 @@ export default function HomePage() {
     }
 
     setProfile(data ? profileFromRow(data) : profileFromAuth(currentSession.user));
+  }
+
+  async function loadAppData(currentSession = session) {
+    if (!currentSession?.user) return;
+    setDataLoading(true);
+
+    const [exerciseResult, liftResult] = await Promise.all([
+      supabase
+        .from("exercises")
+        .select("id,name,slug,lift_type,description,is_global,owner_user_id")
+        .order("is_global", { ascending: false })
+        .order("name", { ascending: true }),
+      supabase
+        .from("lift_entries")
+        .select("*, exercises(name)")
+        .eq("user_id", currentSession.user.id)
+        .order("date", { ascending: false })
+        .order("created_at", { ascending: false })
+    ]);
+
+    if (exerciseResult.error) setStatus(exerciseResult.error.message);
+    else setExercises(exerciseResult.data || []);
+
+    if (liftResult.error) setStatus(liftResult.error.message);
+    else setLifts(liftResult.data || []);
+
+    setDataLoading(false);
   }
 
   async function signIn(provider) {
@@ -150,6 +187,51 @@ export default function HomePage() {
     setProfile(profileFromRow(data));
     setStatus("Profile saved.");
     setTab("Home");
+    await loadAppData(session);
+  }
+
+  async function saveLift(form) {
+    if (!session?.user || !profile) return;
+    setSaving(true);
+    setStatus("");
+
+    const normalizedWeightKg = kg(form.weight, form.unit);
+    const reps = Number(form.reps);
+    const bestSameLift = lifts
+      .filter((lift) => lift.exercise_id === form.exercise_id && Number(lift.reps) === reps)
+      .reduce((best, lift) => Math.max(best, Number(lift.normalized_weight_kg || 0)), 0);
+    const isPr = normalizedWeightKg > bestSameLift;
+
+    const payload = {
+      user_id: session.user.id,
+      exercise_id: form.exercise_id,
+      date: form.date,
+      weight: Number(form.weight),
+      unit: form.unit,
+      normalized_weight_kg: normalizedWeightKg,
+      reps,
+      percentage_of_max: form.percentage_of_max ? Number(form.percentage_of_max) : null,
+      estimated_1rm_kg: estimatedMaxKg(normalizedWeightKg, reps, form.percentage_of_max),
+      notes: cleanOptional(form.notes),
+      location: cleanOptional(form.location),
+      bodyweight: form.bodyweight ? Number(form.bodyweight) : null,
+      bodyweight_unit: profile.preferred_unit,
+      straps_used: form.straps_used === "yes",
+      is_pr: isPr,
+      visibility: form.visibility
+    };
+
+    const { error } = await supabase.from("lift_entries").insert(payload);
+    setSaving(false);
+
+    if (error) {
+      setStatus(error.message);
+      return;
+    }
+
+    setStatus(isPr ? "Lift saved. New PR." : "Lift saved.");
+    setTab("History");
+    await loadAppData(session);
   }
 
   const profileComplete = useMemo(() => isProfileComplete(profile), [profile]);
@@ -205,7 +287,17 @@ export default function HomePage() {
             onSignOut={signOut}
           />
         ) : (
-          <Dashboard tab={tab} profile={profile} onSignOut={signOut} />
+          <Dashboard
+            tab={tab}
+            profile={profile}
+            exercises={exercises}
+            lifts={lifts}
+            dataLoading={dataLoading}
+            saving={saving}
+            status={status}
+            onSaveLift={saveLift}
+            onSignOut={signOut}
+          />
         )}
       </main>
 
@@ -222,7 +314,23 @@ export default function HomePage() {
   );
 }
 
-function Dashboard({ tab, profile, onSignOut }) {
+function Dashboard({ tab, profile, exercises, lifts, dataLoading, saving, status, onSaveLift, onSignOut }) {
+  if (tab === "Add") {
+    return (
+      <AddLiftPanel
+        profile={profile}
+        exercises={exercises}
+        saving={saving}
+        status={status}
+        onSaveLift={onSaveLift}
+      />
+    );
+  }
+
+  if (tab === "History") {
+    return <HistoryPanel profile={profile} lifts={lifts} dataLoading={dataLoading} />;
+  }
+
   if (tab !== "Home") {
     return (
       <section className="panel">
@@ -243,9 +351,152 @@ function Dashboard({ tab, profile, onSignOut }) {
           {profile.club ? <span>Club: {profile.club}</span> : null}
           <span>Privacy: {privacyLabel(profile.privacy_setting)}</span>
         </div>
+        <div className="profile-summary">
+          <span>{lifts.length} lift{lifts.length === 1 ? "" : "s"} logged</span>
+          <span>{lifts.filter((lift) => lift.is_pr).length} PR{lifts.filter((lift) => lift.is_pr).length === 1 ? "" : "s"}</span>
+        </div>
         <button className="btn secondary" onClick={onSignOut}>Sign out</button>
       </section>
     </div>
+  );
+}
+
+function AddLiftPanel({ profile, exercises, saving, status, onSaveLift }) {
+  const [form, setForm] = useState(() => ({
+    exercise_id: exercises[0]?.id || "",
+    date: new Date().toISOString().slice(0, 10),
+    weight: "",
+    unit: profile.preferred_unit,
+    reps: "1",
+    percentage_of_max: "",
+    location: profile.club || "",
+    bodyweight: profile.bodyweight || "",
+    straps_used: "no",
+    notes: "",
+    visibility: profile.privacy_setting
+  }));
+
+  useEffect(() => {
+    setForm((current) => ({
+      ...current,
+      exercise_id: current.exercise_id || exercises[0]?.id || "",
+      unit: profile.preferred_unit,
+      location: current.location || profile.club || "",
+      bodyweight: current.bodyweight || profile.bodyweight || "",
+      visibility: current.visibility || profile.privacy_setting
+    }));
+  }, [exercises, profile]);
+
+  function update(field, value) {
+    setForm((current) => ({ ...current, [field]: value }));
+  }
+
+  function submit(event) {
+    event.preventDefault();
+    onSaveLift(form);
+  }
+
+  return (
+    <section className="panel">
+      <div className="section-head">
+        <div>
+          <h1>Add lift</h1>
+          <p className="muted">Log a lift and PR Forge will detect records for that exercise and rep count.</p>
+        </div>
+      </div>
+
+      {!exercises.length ? (
+        <p className="empty">No exercises found. Check that the Supabase schema seed ran successfully.</p>
+      ) : (
+        <form className="form" onSubmit={submit}>
+          <div className="split">
+            <Field label="Exercise" required>
+              <select required value={form.exercise_id} onChange={(event) => update("exercise_id", event.target.value)}>
+                {exercises.map((exercise) => <option key={exercise.id} value={exercise.id}>{exercise.name}</option>)}
+              </select>
+            </Field>
+            <Field label="Date" required>
+              <input required type="date" value={form.date} onChange={(event) => update("date", event.target.value)} />
+            </Field>
+            <Field label="Weight lifted" required>
+              <input required type="number" min="0.1" step="0.1" value={form.weight} onChange={(event) => update("weight", event.target.value)} />
+            </Field>
+            <Field label="Unit">
+              <select value={form.unit} onChange={(event) => update("unit", event.target.value)}>
+                <option value="kg">kg</option>
+                <option value="lb">lb</option>
+              </select>
+            </Field>
+            <Field label="Reps" required>
+              <input required type="number" min="1" step="1" value={form.reps} onChange={(event) => update("reps", event.target.value)} />
+            </Field>
+            <Field label="Percentage of max">
+              <input type="number" min="1" max="100" step="0.1" value={form.percentage_of_max} onChange={(event) => update("percentage_of_max", event.target.value)} />
+            </Field>
+            <Field label="Location, gym, or club">
+              <input value={form.location} onChange={(event) => update("location", event.target.value)} />
+            </Field>
+            <Field label="Bodyweight today">
+              <input type="number" min="1" step="0.1" value={form.bodyweight} onChange={(event) => update("bodyweight", event.target.value)} />
+            </Field>
+            <Field label="Were straps used?">
+              <select value={form.straps_used} onChange={(event) => update("straps_used", event.target.value)}>
+                <option value="no">No</option>
+                <option value="yes">Yes</option>
+              </select>
+            </Field>
+            <Field label="Visibility">
+              <select value={form.visibility} onChange={(event) => update("visibility", event.target.value)}>
+                <option value="private">Only me</option>
+                <option value="friends">Friends only</option>
+                <option value="public">Public</option>
+              </select>
+            </Field>
+          </div>
+          <Field label="Notes">
+            <textarea value={form.notes} onChange={(event) => update("notes", event.target.value)} placeholder="How did it feel?" />
+          </Field>
+          {status ? <p className="status">{status}</p> : null}
+          <button className="btn" disabled={saving} type="submit">{saving ? "Saving..." : "Save lift"}</button>
+        </form>
+      )}
+    </section>
+  );
+}
+
+function HistoryPanel({ profile, lifts, dataLoading }) {
+  return (
+    <section className="panel">
+      <div className="section-head">
+        <div>
+          <h1>History</h1>
+          <p className="muted">Your live lift entries saved in Supabase.</p>
+        </div>
+      </div>
+
+      {dataLoading ? <p className="muted">Loading lifts...</p> : null}
+      {!dataLoading && !lifts.length ? <p className="empty">No lifts logged yet.</p> : null}
+      <div className="list">
+        {lifts.map((lift) => (
+          <article className="lift-row" key={lift.id}>
+            <div>
+              <div className="lift-title">
+                {lift.exercises?.name || "Exercise"}
+                {lift.is_pr ? <span className="badge">PR</span> : null}
+                <span className="badge blue">{privacyLabel(lift.visibility)}</span>
+              </div>
+              <div className="meta">
+                <span>{displayWeight(lift.normalized_weight_kg, profile.preferred_unit)}</span>
+                <span>{lift.reps} rep{Number(lift.reps) === 1 ? "" : "s"}</span>
+                <span>{displayDate(lift.date)}</span>
+                {lift.straps_used ? <span>Straps: yes</span> : <span>Straps: no</span>}
+              </div>
+              {lift.notes ? <p>{lift.notes}</p> : null}
+            </div>
+          </article>
+        ))}
+      </div>
+    </section>
   );
 }
 

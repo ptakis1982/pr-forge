@@ -18,5 +18,6 @@ export function displayDate(isoDate) {
 export function estimatedMaxKg(normalizedWeightKg, reps, percentage) {
   const pct = Number(percentage);
   if (pct > 0) return Number(normalizedWeightKg) / (pct / 100);
+  if (Number(reps) <= 1) return Number(normalizedWeightKg);
   return Number(normalizedWeightKg) * (1 + Number(reps) / 30);
 }
