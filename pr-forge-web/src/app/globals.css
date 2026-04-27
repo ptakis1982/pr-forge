@@ -120,6 +120,10 @@ button:disabled {
   margin: 0;
 }
 
+.section-head.subhead {
+  margin-top: 18px;
+}
+
 .form {
   display: grid;
   gap: 16px;
@@ -268,6 +272,60 @@ button:disabled {
   margin-top: 8px;
 }
 
+.workout-rounds {
+  display: grid;
+  gap: 10px;
+  margin: 12px 0 18px;
+}
+
+.workout-round {
+  display: grid;
+  grid-template-columns: 34px minmax(110px, 0.8fr) minmax(84px, 0.55fr) minmax(110px, 0.75fr) minmax(160px, 1fr) 44px;
+  gap: 10px;
+  align-items: end;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: white;
+}
+
+.round-number {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: var(--soft);
+  color: var(--accent);
+  font-weight: 850;
+}
+
+.target-weight {
+  min-height: 48px;
+  display: grid;
+  align-content: center;
+  gap: 2px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfcfd;
+}
+
+.target-weight span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.target-weight strong {
+  font-size: 20px;
+}
+
+.icon-btn {
+  width: 44px;
+  min-height: 44px;
+  padding: 0;
+}
+
 .btn {
   min-height: 42px;
   border-radius: 8px;
@@ -292,11 +350,11 @@ button:disabled {
   left: 50%;
   bottom: 14px;
   z-index: 8;
-  width: min(720px, calc(100% - 24px));
+  width: min(820px, calc(100% - 24px));
   min-height: 68px;
   transform: translateX(-50%);
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(7, minmax(0, 1fr));
   gap: 4px;
   padding: 6px;
   border-radius: 18px;
@@ -313,7 +371,7 @@ button:disabled {
   border-radius: 14px;
   background: transparent;
   color: #c9d4e5;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 760;
 }
 
@@ -329,6 +387,20 @@ button:disabled {
 
   .stats-grid {
     grid-template-columns: 1fr;
+  }
+
+  .workout-round {
+    grid-template-columns: 34px 1fr 1fr;
+  }
+
+  .workout-round .target-weight,
+  .workout-round .field:last-of-type {
+    grid-column: 2 / -1;
+  }
+
+  .workout-round .icon-btn {
+    grid-column: 3;
+    justify-self: end;
   }
 
   .main {

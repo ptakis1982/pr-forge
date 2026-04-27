@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import { displayDate, displayWeight, estimatedMaxKg, kg } from "@/lib/format";
 
-const NAV = ["Home", "Add", "History", "Progress", "Friends", "Profile"];
+const NAV = ["Home", "Add", "History", "Progress", "Workout", "Friends", "Profile"];
 
 const COUNTRIES = [
   ["LT", "Lithuania"],
@@ -49,6 +49,7 @@ export default function HomePage() {
   const [profile, setProfile] = useState(null);
   const [exercises, setExercises] = useState([]);
   const [lifts, setLifts] = useState([]);
+  const [workouts, setWorkouts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [dataLoading, setDataLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -56,6 +57,7 @@ export default function HomePage() {
   const [editingLiftId, setEditingLiftId] = useState("");
   const [progressExerciseId, setProgressExerciseId] = useState("");
   const [progressMode, setProgressMode] = useState("actual");
+  const [editingWorkoutId, setEditingWorkoutId] = useState("");
   const [status, setStatus] = useState("");
 
   useEffect(() => {
@@ -84,6 +86,7 @@ export default function HomePage() {
         setProfile(null);
         setExercises([]);
         setLifts([]);
+        setWorkouts([]);
       }
     });
 
@@ -137,7 +140,7 @@ export default function HomePage() {
     if (!cancelled) setDataLoading(true);
 
     try {
-      const [exerciseResult, liftResult] = await Promise.all([
+      const [exerciseResult, liftResult, workoutResult] = await Promise.all([
         supabase
           .from("exercises")
           .select("id,name,slug,lift_type,description,is_global,owner_user_id")
@@ -146,6 +149,12 @@ export default function HomePage() {
         supabase
           .from("lift_entries")
           .select("*, exercises(name)")
+          .eq("user_id", currentSession.user.id)
+          .order("date", { ascending: false })
+          .order("created_at", { ascending: false }),
+        supabase
+          .from("workouts")
+          .select("*, exercises(name), workout_rounds(*)")
           .eq("user_id", currentSession.user.id)
           .order("date", { ascending: false })
           .order("created_at", { ascending: false })
@@ -158,6 +167,9 @@ export default function HomePage() {
 
       if (liftResult.error) setStatus(liftResult.error.message);
       else setLifts(liftResult.data || []);
+
+      if (workoutResult.error) setStatus(workoutResult.error.message);
+      else setWorkouts((workoutResult.data || []).map(sortWorkoutRounds));
     } finally {
       if (!cancelled) setDataLoading(false);
     }
@@ -357,6 +369,139 @@ export default function HomePage() {
     await Promise.all(updates);
   }
 
+  async function saveWorkout(form) {
+    if (!session?.user) return;
+    setSaving(true);
+    setStatus("");
+
+    const rounds = form.rounds.filter((round) => round.percentage);
+    if (!form.exercise_id || !form.base_weight || !rounds.length) {
+      setSaving(false);
+      setStatus("Choose exercise, base weight, and at least one round.");
+      return;
+    }
+
+    const workoutPayload = {
+      user_id: session.user.id,
+      exercise_id: form.exercise_id,
+      date: new Date().toISOString().slice(0, 10),
+      base_weight: Number(form.base_weight),
+      unit: form.unit,
+      rounding: Number(form.rounding),
+      visibility: form.visibility,
+      notes: cleanOptional(form.notes)
+    };
+
+    const { data: workout, error: workoutError } = await supabase
+      .from("workouts")
+      .insert(workoutPayload)
+      .select("*")
+      .single();
+
+    if (workoutError) {
+      setSaving(false);
+      setStatus(workoutError.message);
+      return;
+    }
+
+    const roundPayload = rounds.map((round, index) => ({
+      workout_id: workout.id,
+      position: index + 1,
+      percentage: Number(round.percentage),
+      reps: round.reps ? Number(round.reps) : null,
+      target_weight: roundedWorkoutWeight(form.base_weight, round.percentage, form.rounding),
+      notes: cleanOptional(round.notes)
+    }));
+
+    const { error: roundsError } = await supabase.from("workout_rounds").insert(roundPayload);
+    setSaving(false);
+
+    if (roundsError) {
+      setStatus(roundsError.message);
+      return;
+    }
+
+    setStatus("Workout saved.");
+    await loadAppData(session);
+  }
+
+  async function updateWorkout(workoutId, form) {
+    if (!session?.user) return;
+    setSaving(true);
+    setStatus("");
+
+    const rounds = form.rounds.filter((round) => round.percentage);
+    const { error: workoutError } = await supabase
+      .from("workouts")
+      .update({
+        exercise_id: form.exercise_id,
+        base_weight: Number(form.base_weight),
+        unit: form.unit,
+        rounding: Number(form.rounding),
+        visibility: form.visibility,
+        notes: cleanOptional(form.notes)
+      })
+      .eq("id", workoutId)
+      .eq("user_id", session.user.id);
+
+    if (workoutError) {
+      setSaving(false);
+      setStatus(workoutError.message);
+      return;
+    }
+
+    const { error: deleteRoundsError } = await supabase.from("workout_rounds").delete().eq("workout_id", workoutId);
+    if (deleteRoundsError) {
+      setSaving(false);
+      setStatus(deleteRoundsError.message);
+      return;
+    }
+
+    const roundPayload = rounds.map((round, index) => ({
+      workout_id: workoutId,
+      position: index + 1,
+      percentage: Number(round.percentage),
+      reps: round.reps ? Number(round.reps) : null,
+      target_weight: roundedWorkoutWeight(form.base_weight, round.percentage, form.rounding),
+      notes: cleanOptional(round.notes)
+    }));
+
+    const { error: roundsError } = await supabase.from("workout_rounds").insert(roundPayload);
+    setSaving(false);
+
+    if (roundsError) {
+      setStatus(roundsError.message);
+      return;
+    }
+
+    setEditingWorkoutId("");
+    setStatus("Workout updated.");
+    await loadAppData(session);
+  }
+
+  async function deleteWorkout(workoutId) {
+    if (!session?.user) return;
+    setSaving(true);
+    setStatus("");
+
+    const { error } = await supabase
+      .from("workouts")
+      .delete()
+      .eq("id", workoutId)
+      .eq("user_id", session.user.id);
+
+    setSaving(false);
+
+    if (error) {
+      setStatus(error.message);
+      return;
+    }
+
+    setEditingWorkoutId("");
+    setStatus("Workout deleted.");
+    await loadAppData(session);
+  }
+
   const profileComplete = useMemo(() => isProfileComplete(profile), [profile]);
 
   if (loading) {
@@ -415,16 +560,23 @@ export default function HomePage() {
             profile={profile}
             exercises={exercises}
             lifts={lifts}
+            workouts={workouts}
             dataLoading={dataLoading}
             saving={saving}
             status={status}
             editingLiftId={editingLiftId}
+            editingWorkoutId={editingWorkoutId}
             progressExerciseId={progressExerciseId}
             progressMode={progressMode}
             onEditLift={setEditingLiftId}
             onCancelEditLift={() => setEditingLiftId("")}
             onUpdateLift={updateLift}
             onDeleteLift={deleteLift}
+            onEditWorkout={setEditingWorkoutId}
+            onCancelEditWorkout={() => setEditingWorkoutId("")}
+            onSaveWorkout={saveWorkout}
+            onUpdateWorkout={updateWorkout}
+            onDeleteWorkout={deleteWorkout}
             onProgressExerciseChange={setProgressExerciseId}
             onProgressModeChange={setProgressMode}
             onSaveLift={saveLift}
@@ -451,16 +603,23 @@ function Dashboard({
   profile,
   exercises,
   lifts,
+  workouts,
   dataLoading,
   saving,
   status,
   editingLiftId,
+  editingWorkoutId,
   progressExerciseId,
   progressMode,
   onEditLift,
   onCancelEditLift,
   onUpdateLift,
   onDeleteLift,
+  onEditWorkout,
+  onCancelEditWorkout,
+  onSaveWorkout,
+  onUpdateWorkout,
+  onDeleteWorkout,
   onProgressExerciseChange,
   onProgressModeChange,
   onSaveLift,
@@ -510,6 +669,25 @@ function Dashboard({
     );
   }
 
+  if (tab === "Workout") {
+    return (
+      <WorkoutPanel
+        profile={profile}
+        exercises={exercises}
+        lifts={lifts}
+        workouts={workouts}
+        saving={saving}
+        status={status}
+        editingWorkoutId={editingWorkoutId}
+        onEditWorkout={onEditWorkout}
+        onCancelEditWorkout={onCancelEditWorkout}
+        onSaveWorkout={onSaveWorkout}
+        onUpdateWorkout={onUpdateWorkout}
+        onDeleteWorkout={onDeleteWorkout}
+      />
+    );
+  }
+
   if (tab !== "Home") {
     return (
       <section className="panel">
@@ -533,6 +711,7 @@ function Dashboard({
         <div className="profile-summary">
           <span>{lifts.length} lift{lifts.length === 1 ? "" : "s"} logged</span>
           <span>{lifts.filter((lift) => lift.is_pr).length} PR{lifts.filter((lift) => lift.is_pr).length === 1 ? "" : "s"}</span>
+          <span>{workouts.length} workout{workouts.length === 1 ? "" : "s"} saved</span>
         </div>
         <button className="btn secondary" onClick={onSignOut}>Sign out</button>
       </section>
@@ -851,6 +1030,165 @@ function ProgressPanel({ profile, exercises, lifts, selectedExerciseId, mode, on
   );
 }
 
+function WorkoutPanel({
+  profile,
+  exercises,
+  lifts,
+  workouts,
+  saving,
+  status,
+  editingWorkoutId,
+  onEditWorkout,
+  onCancelEditWorkout,
+  onSaveWorkout,
+  onUpdateWorkout,
+  onDeleteWorkout
+}) {
+  const editingWorkout = workouts.find((workout) => workout.id === editingWorkoutId);
+  const defaultExerciseId = editingWorkout?.exercise_id || exercises[0]?.id || "";
+  const defaultBase = editingWorkout ? editingWorkout.base_weight : bestTrainingBase(lifts, defaultExerciseId, profile.preferred_unit);
+  const [form, setForm] = useState(() => workoutFormFromSource(editingWorkout, defaultExerciseId, defaultBase, profile));
+
+  useEffect(() => {
+    const nextExerciseId = editingWorkout?.exercise_id || form.exercise_id || exercises[0]?.id || "";
+    const nextBase = editingWorkout ? editingWorkout.base_weight : (form.base_weight || bestTrainingBase(lifts, nextExerciseId, profile.preferred_unit));
+    setForm(workoutFormFromSource(editingWorkout, nextExerciseId, nextBase, profile, form.rounds));
+  }, [editingWorkoutId, exercises.length]);
+
+  function update(field, value) {
+    setForm((current) => ({ ...current, [field]: value }));
+  }
+
+  function updateRound(id, field, value) {
+    setForm((current) => ({
+      ...current,
+      rounds: current.rounds.map((round) => round.id === id ? { ...round, [field]: value } : round)
+    }));
+  }
+
+  function addRound() {
+    setForm((current) => ({
+      ...current,
+      rounds: [...current.rounds, { id: `round_${Date.now()}`, percentage: "", reps: "", notes: "" }]
+    }));
+  }
+
+  function removeRound(id) {
+    setForm((current) => ({
+      ...current,
+      rounds: current.rounds.filter((round) => round.id !== id)
+    }));
+  }
+
+  function changeExercise(value) {
+    const base = bestTrainingBase(lifts, value, profile.preferred_unit);
+    setForm((current) => ({ ...current, exercise_id: value, base_weight: base || "" }));
+  }
+
+  function submit() {
+    if (editingWorkoutId) onUpdateWorkout(editingWorkoutId, form);
+    else onSaveWorkout(form);
+  }
+
+  return (
+    <section className="panel">
+      <div className="section-head">
+        <div>
+          <h1>Workout</h1>
+          <p className="muted">Plan percentage rounds from your PR or a training max.</p>
+        </div>
+      </div>
+
+      <div className="split">
+        <Field label="Exercise">
+          <select value={form.exercise_id} onChange={(event) => changeExercise(event.target.value)}>
+            {exercises.map((exercise) => <option key={exercise.id} value={exercise.id}>{exercise.name}</option>)}
+          </select>
+        </Field>
+        <Field label="Base weight / training max">
+          <input type="number" min="1" step="0.1" value={form.base_weight} onChange={(event) => update("base_weight", event.target.value)} />
+        </Field>
+        <Field label="Round to nearest">
+          <select value={form.rounding} onChange={(event) => update("rounding", event.target.value)}>
+            {(form.unit === "kg" ? [["0.5", "0.5 kg"], ["1", "1 kg"], ["2.5", "2.5 kg"]] : [["1", "1 lb"], ["2.5", "2.5 lb"], ["5", "5 lb"]]).map(([value, label]) => (
+              <option key={value} value={value}>{label}</option>
+            ))}
+          </select>
+        </Field>
+        <Field label="Visibility">
+          <select value={form.visibility} onChange={(event) => update("visibility", event.target.value)}>
+            <option value="private">Only me</option>
+            <option value="friends">Friends only</option>
+            <option value="public">Public</option>
+          </select>
+        </Field>
+      </div>
+
+      <div className="section-head subhead">
+        <h2>Rounds</h2>
+        <div className="actions">
+          <button className="btn" type="button" disabled={saving} onClick={submit}>{editingWorkoutId ? "Save changes" : "Save workout"}</button>
+          {editingWorkoutId ? (
+            <>
+              <button className="btn secondary" type="button" onClick={onCancelEditWorkout}>Cancel</button>
+              <button className="btn danger" type="button" disabled={saving} onClick={() => onDeleteWorkout(editingWorkoutId)}>Delete workout</button>
+            </>
+          ) : null}
+          <button className="btn secondary" type="button" onClick={addRound}>+ Round</button>
+        </div>
+      </div>
+
+      {status ? <p className="status">{status}</p> : null}
+
+      <div className="workout-rounds">
+        {form.rounds.map((round, index) => {
+          const target = form.base_weight && round.percentage ? roundedWorkoutWeight(form.base_weight, round.percentage, form.rounding) : 0;
+          return (
+            <div className="workout-round" key={round.id}>
+              <div className="round-number">{index + 1}</div>
+              <Field label="Percentage">
+                <input type="number" min="0" step="0.5" value={round.percentage} onChange={(event) => updateRound(round.id, "percentage", event.target.value)} />
+              </Field>
+              <Field label="Reps">
+                <input type="number" min="1" step="1" value={round.reps} onChange={(event) => updateRound(round.id, "reps", event.target.value)} />
+              </Field>
+              <div className="target-weight">
+                <span>Target</span>
+                <strong>{target ? `${target} ${form.unit}` : "-"}</strong>
+              </div>
+              <Field label="Notes">
+                <input value={round.notes} onChange={(event) => updateRound(round.id, "notes", event.target.value)} />
+              </Field>
+              <button className="btn secondary icon-btn" type="button" onClick={() => removeRound(round.id)}>x</button>
+            </div>
+          );
+        })}
+      </div>
+
+      <h2>Saved workouts</h2>
+      {!workouts.length ? <p className="empty">Saved workout plans will appear here.</p> : null}
+      <div className="list">
+        {workouts.slice(0, 5).map((workout) => (
+          <article className="lift-row" key={workout.id}>
+            <div>
+              <div className="lift-title">{workout.exercises?.name || "Workout"} <span className="badge blue">Workout</span></div>
+              <div className="meta">
+                <span>{displayDate(workout.date)}</span>
+                <span>Base {workout.base_weight} {workout.unit}</span>
+                <span>{workout.workout_rounds?.length || 0} round{(workout.workout_rounds?.length || 0) === 1 ? "" : "s"}</span>
+              </div>
+              <p>{(workout.workout_rounds || []).map((round) => `${round.percentage}% -> ${round.target_weight} ${workout.unit}`).join(", ")}</p>
+              <div className="actions">
+                <button className="btn secondary" type="button" onClick={() => onEditWorkout(workout.id)}>Edit</button>
+              </div>
+            </div>
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function ProgressChart({ lifts, unit, mode }) {
   const width = 760;
   const height = 320;
@@ -1059,6 +1397,62 @@ function formatChartDate(date) {
   const parts = String(date).split("-");
   if (parts.length !== 3) return String(date);
   return `${parts[1]}-${parts[2]}`;
+}
+
+function roundedWorkoutWeight(baseWeight, percentage, rounding) {
+  const target = Number(baseWeight) * (Number(percentage) / 100);
+  const step = Number(rounding) || 1;
+  return Math.round(target / step) * step;
+}
+
+function bestTrainingBase(lifts, exerciseId, unit) {
+  const bestKg = lifts
+    .filter((lift) => lift.exercise_id === exerciseId)
+    .reduce((best, lift) => Math.max(best, Number(lift.estimated_1rm_kg || lift.normalized_weight_kg || 0)), 0);
+  if (!bestKg) return "";
+  const value = unit === "lb" ? bestKg / 0.45359237 : bestKg;
+  return Math.round(value * 10) / 10;
+}
+
+function workoutFormFromSource(workout, exerciseId, baseWeight, profile, existingRounds) {
+  if (workout) {
+    return {
+      exercise_id: workout.exercise_id,
+      base_weight: workout.base_weight,
+      unit: workout.unit,
+      rounding: workout.rounding,
+      visibility: workout.visibility,
+      notes: workout.notes || "",
+      rounds: (workout.workout_rounds || []).map((round) => ({
+        id: round.id,
+        percentage: round.percentage,
+        reps: round.reps || "",
+        notes: round.notes || ""
+      }))
+    };
+  }
+
+  return {
+    exercise_id: exerciseId,
+    base_weight: baseWeight || "",
+    unit: profile.preferred_unit,
+    rounding: profile.preferred_unit === "kg" ? "2.5" : "5",
+    visibility: profile.privacy_setting,
+    notes: "",
+    rounds: existingRounds?.length ? existingRounds : [
+      { id: "round_1", percentage: 50, reps: "", notes: "" },
+      { id: "round_2", percentage: 60, reps: "", notes: "" },
+      { id: "round_3", percentage: 70, reps: "", notes: "" },
+      { id: "round_4", percentage: 80, reps: "", notes: "" }
+    ]
+  };
+}
+
+function sortWorkoutRounds(workout) {
+  return {
+    ...workout,
+    workout_rounds: [...(workout.workout_rounds || [])].sort((a, b) => Number(a.position) - Number(b.position))
+  };
 }
 
 function cleanOptional(value) {
