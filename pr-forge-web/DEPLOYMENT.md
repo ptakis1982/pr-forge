@@ -2,6 +2,8 @@
 
 This folder is the production PWA shell for PR Forge.
 
+Redeploy from Vercel after changing root directory, framework, or environment variables.
+
 ## Local Setup
 
 Copy the example env file:
