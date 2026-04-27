@@ -51,6 +51,10 @@ export default function HomePage() {
   const [lifts, setLifts] = useState([]);
   const [workouts, setWorkouts] = useState([]);
   const [friends, setFriends] = useState([]);
+  const [feedLifts, setFeedLifts] = useState([]);
+  const [likeCounts, setLikeCounts] = useState({});
+  const [likedLifts, setLikedLifts] = useState({});
+  const [comments, setComments] = useState({});
   const [friendResults, setFriendResults] = useState([]);
   const [friendSearchRan, setFriendSearchRan] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -91,6 +95,10 @@ export default function HomePage() {
         setLifts([]);
         setWorkouts([]);
         setFriends([]);
+        setFeedLifts([]);
+        setLikeCounts({});
+        setLikedLifts({});
+        setComments({});
         setFriendResults([]);
       }
     });
@@ -220,6 +228,73 @@ export default function HomePage() {
     });
 
     if (!cancelled) setFriends(nextFriends);
+    await loadFriendFeed(nextFriends, userId, cancelled);
+  }
+
+  async function loadFriendFeed(nextFriends, userId, cancelled = false) {
+    const friendIds = nextFriends.filter((friend) => friend.accepted).map((friend) => friend.profile_id);
+    if (!friendIds.length) {
+      if (!cancelled) {
+        setFeedLifts([]);
+        setLikeCounts({});
+        setLikedLifts({});
+        setComments({});
+      }
+      return;
+    }
+
+    const { data, error } = await supabase
+      .from("lift_entries")
+      .select("*, exercises(name), profiles!lift_entries_user_id_fkey(id,name,surname,nickname)")
+      .in("user_id", friendIds)
+      .eq("is_pr", true)
+      .order("date", { ascending: false })
+      .order("created_at", { ascending: false })
+      .limit(20);
+
+    if (error) {
+      if (!cancelled) setStatus(error.message);
+      return;
+    }
+
+    const liftIds = (data || []).map((lift) => lift.id);
+    if (!liftIds.length) {
+      if (!cancelled) {
+        setFeedLifts([]);
+        setLikeCounts({});
+        setLikedLifts({});
+        setComments({});
+      }
+      return;
+    }
+
+    const [likesResult, commentsResult] = await Promise.all([
+      supabase.from("likes").select("lift_entry_id,user_id").in("lift_entry_id", liftIds),
+      supabase.from("comments").select("id,lift_entry_id,user_id,body,created_at,profiles(name,surname,nickname)").in("lift_entry_id", liftIds).order("created_at", { ascending: true })
+    ]);
+
+    if (cancelled) return;
+
+    setFeedLifts(data || []);
+
+    if (!likesResult.error) {
+      const counts = {};
+      const liked = {};
+      (likesResult.data || []).forEach((like) => {
+        counts[like.lift_entry_id] = (counts[like.lift_entry_id] || 0) + 1;
+        if (like.user_id === userId) liked[like.lift_entry_id] = true;
+      });
+      setLikeCounts(counts);
+      setLikedLifts(liked);
+    }
+
+    if (!commentsResult.error) {
+      const grouped = {};
+      (commentsResult.data || []).forEach((comment) => {
+        grouped[comment.lift_entry_id] = [...(grouped[comment.lift_entry_id] || []), comment];
+      });
+      setComments(grouped);
+    }
   }
 
   async function signIn(provider) {
@@ -623,6 +698,64 @@ export default function HomePage() {
     await loadAppData(session);
   }
 
+  async function toggleLike(liftId) {
+    if (!session?.user) return;
+    const liked = Boolean(likedLifts[liftId]);
+    setStatus("");
+
+    if (liked) {
+      const { error } = await supabase
+        .from("likes")
+        .delete()
+        .eq("lift_entry_id", liftId)
+        .eq("user_id", session.user.id);
+      if (error) {
+        setStatus(error.message);
+        return;
+      }
+      setLikedLifts((current) => ({ ...current, [liftId]: false }));
+      setLikeCounts((current) => ({ ...current, [liftId]: Math.max((current[liftId] || 1) - 1, 0) }));
+    } else {
+      const { error } = await supabase.from("likes").insert({
+        lift_entry_id: liftId,
+        user_id: session.user.id
+      });
+      if (error) {
+        setStatus(error.message);
+        return;
+      }
+      setLikedLifts((current) => ({ ...current, [liftId]: true }));
+      setLikeCounts((current) => ({ ...current, [liftId]: (current[liftId] || 0) + 1 }));
+    }
+  }
+
+  async function postComment(liftId, body) {
+    if (!session?.user) return;
+    const text = body.trim();
+    if (!text) return;
+    setStatus("");
+
+    const { data, error } = await supabase
+      .from("comments")
+      .insert({
+        lift_entry_id: liftId,
+        user_id: session.user.id,
+        body: text
+      })
+      .select("id,lift_entry_id,user_id,body,created_at,profiles(name,surname,nickname)")
+      .single();
+
+    if (error) {
+      setStatus(error.message);
+      return;
+    }
+
+    setComments((current) => ({
+      ...current,
+      [liftId]: [...(current[liftId] || []), data]
+    }));
+  }
+
   const profileComplete = useMemo(() => isProfileComplete(profile), [profile]);
 
   if (loading) {
@@ -683,6 +816,10 @@ export default function HomePage() {
             lifts={lifts}
             workouts={workouts}
             friends={friends}
+            feedLifts={feedLifts}
+            likeCounts={likeCounts}
+            likedLifts={likedLifts}
+            comments={comments}
             friendResults={friendResults}
             friendSearchRan={friendSearchRan}
             dataLoading={dataLoading}
@@ -704,6 +841,8 @@ export default function HomePage() {
             onSearchFriends={searchFriends}
             onSendFriendRequest={sendFriendRequest}
             onAcceptFriendRequest={acceptFriendRequest}
+            onToggleLike={toggleLike}
+            onPostComment={postComment}
             onProgressExerciseChange={setProgressExerciseId}
             onProgressModeChange={setProgressMode}
             onSaveLift={saveLift}
@@ -733,6 +872,10 @@ function Dashboard({
   lifts,
   workouts,
   friends,
+  feedLifts,
+  likeCounts,
+  likedLifts,
+  comments,
   friendResults,
   friendSearchRan,
   dataLoading,
@@ -754,6 +897,8 @@ function Dashboard({
   onSearchFriends,
   onSendFriendRequest,
   onAcceptFriendRequest,
+  onToggleLike,
+  onPostComment,
   onProgressExerciseChange,
   onProgressModeChange,
   onSaveLift,
@@ -828,6 +973,10 @@ function Dashboard({
         profile={profile}
         lifts={lifts}
         friends={friends}
+        feedLifts={feedLifts}
+        likeCounts={likeCounts}
+        likedLifts={likedLifts}
+        comments={comments}
         friendResults={friendResults}
         friendSearchRan={friendSearchRan}
         saving={saving}
@@ -835,6 +984,8 @@ function Dashboard({
         onSearchFriends={onSearchFriends}
         onSendFriendRequest={onSendFriendRequest}
         onAcceptFriendRequest={onAcceptFriendRequest}
+        onToggleLike={onToggleLike}
+        onPostComment={onPostComment}
       />
     );
   }
@@ -1343,19 +1494,25 @@ function WorkoutPanel({
 function FriendsPanel({
   lifts,
   friends,
+  feedLifts,
+  likeCounts,
+  likedLifts,
+  comments,
   friendResults,
   friendSearchRan,
   saving,
   status,
   onSearchFriends,
   onSendFriendRequest,
-  onAcceptFriendRequest
+  onAcceptFriendRequest,
+  onToggleLike,
+  onPostComment
 }) {
   const [query, setQuery] = useState("");
   const incoming = friends.filter((friend) => friend.incoming);
   const sent = friends.filter((friend) => friend.outgoing);
   const accepted = friends.filter((friend) => friend.accepted);
-  const friendFeed = lifts.filter((lift) => lift.is_pr && friends.some((friend) => friend.accepted && friend.profile_id === lift.user_id));
+  const friendFeed = feedLifts.length ? feedLifts : lifts.filter((lift) => lift.is_pr && friends.some((friend) => friend.accepted && friend.profile_id === lift.user_id));
 
   function submit(event) {
     event.preventDefault();
@@ -1431,13 +1588,15 @@ function FriendsPanel({
       {friendFeed.length ? (
         <div className="list">
           {friendFeed.slice(0, 10).map((lift) => (
-            <article className="lift-row" key={lift.id}>
-              <div>
-                <div className="lift-title">{lift.exercises?.name || "Exercise"} <span className="badge">PR</span></div>
-                <div className="meta">{displayWeight(lift.normalized_weight_kg)} · {lift.reps} rep{Number(lift.reps) === 1 ? "" : "s"} · {displayDate(lift.date)}</div>
-                {lift.notes ? <p>{lift.notes}</p> : null}
-              </div>
-            </article>
+            <FeedLiftRow
+              key={lift.id}
+              lift={lift}
+              likeCount={likeCounts[lift.id] || 0}
+              liked={Boolean(likedLifts[lift.id])}
+              comments={comments[lift.id] || []}
+              onToggleLike={onToggleLike}
+              onPostComment={onPostComment}
+            />
           ))}
         </div>
       ) : (
@@ -1455,6 +1614,39 @@ function FriendRow({ friend, action }) {
         <div className="meta">{[friend.profile?.club, countryName(friend.profile?.country)].filter(Boolean).join(" · ") || "Profile"}</div>
       </div>
       <div className="actions">{action}</div>
+    </article>
+  );
+}
+
+function FeedLiftRow({ lift, likeCount, liked, comments, onToggleLike, onPostComment }) {
+  const [comment, setComment] = useState("");
+
+  function submit(event) {
+    event.preventDefault();
+    onPostComment(lift.id, comment);
+    setComment("");
+  }
+
+  return (
+    <article className="lift-row">
+      <div>
+        <div className="lift-title">
+          {displayPerson(lift.profiles)} hit {lift.exercises?.name || "Exercise"} <span className="badge">PR</span>
+        </div>
+        <div className="meta">{displayWeight(lift.normalized_weight_kg)} · {lift.reps} rep{Number(lift.reps) === 1 ? "" : "s"} · {displayDate(lift.date)}</div>
+        {lift.notes ? <p>{lift.notes}</p> : null}
+        <div className="meta">{likeCount} like{likeCount === 1 ? "" : "s"} · {comments.length} comment{comments.length === 1 ? "" : "s"}</div>
+        {comments.map((item) => (
+          <p className="comment" key={item.id}><strong>{displayPerson(item.profiles)}:</strong> {item.body}</p>
+        ))}
+        <form className="comment-form" onSubmit={submit}>
+          <input value={comment} onChange={(event) => setComment(event.target.value)} placeholder="Write a comment" />
+          <button className="btn secondary" type="submit">Post</button>
+        </form>
+      </div>
+      <div className="actions">
+        <button className="btn secondary" type="button" onClick={() => onToggleLike(lift.id)}>{liked ? "Liked" : "Like"}</button>
+      </div>
     </article>
   );
 }
