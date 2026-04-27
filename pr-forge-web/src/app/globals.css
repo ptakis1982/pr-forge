@@ -191,6 +191,10 @@ button:disabled {
   gap: 10px;
 }
 
+.inset-list {
+  margin-top: 12px;
+}
+
 .lift-row {
   display: grid;
   gap: 8px;
@@ -378,6 +382,17 @@ button:disabled {
 .bottom-nav button.active {
   background: var(--accent);
   color: white;
+}
+
+.nav-dot {
+  position: absolute;
+  top: 10px;
+  right: 22px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #d9382e;
+  box-shadow: 0 0 0 2px rgba(23, 32, 51, 0.96);
 }
 
 @media (max-width: 760px) {

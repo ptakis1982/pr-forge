@@ -50,6 +50,9 @@ export default function HomePage() {
   const [exercises, setExercises] = useState([]);
   const [lifts, setLifts] = useState([]);
   const [workouts, setWorkouts] = useState([]);
+  const [friends, setFriends] = useState([]);
+  const [friendResults, setFriendResults] = useState([]);
+  const [friendSearchRan, setFriendSearchRan] = useState(false);
   const [loading, setLoading] = useState(true);
   const [dataLoading, setDataLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -87,6 +90,8 @@ export default function HomePage() {
         setExercises([]);
         setLifts([]);
         setWorkouts([]);
+        setFriends([]);
+        setFriendResults([]);
       }
     });
 
@@ -140,7 +145,7 @@ export default function HomePage() {
     if (!cancelled) setDataLoading(true);
 
     try {
-      const [exerciseResult, liftResult, workoutResult] = await Promise.all([
+      const [exerciseResult, liftResult, workoutResult, friendshipResult] = await Promise.all([
         supabase
           .from("exercises")
           .select("id,name,slug,lift_type,description,is_global,owner_user_id")
@@ -157,6 +162,11 @@ export default function HomePage() {
           .select("*, exercises(name), workout_rounds(*)")
           .eq("user_id", currentSession.user.id)
           .order("date", { ascending: false })
+          .order("created_at", { ascending: false }),
+        supabase
+          .from("friendships")
+          .select("id,requester_id,recipient_id,status,created_at")
+          .or(`requester_id.eq.${currentSession.user.id},recipient_id.eq.${currentSession.user.id}`)
           .order("created_at", { ascending: false })
       ]);
 
@@ -170,9 +180,46 @@ export default function HomePage() {
 
       if (workoutResult.error) setStatus(workoutResult.error.message);
       else setWorkouts((workoutResult.data || []).map(sortWorkoutRounds));
+
+      if (friendshipResult.error) setStatus(friendshipResult.error.message);
+      else await hydrateFriendships(friendshipResult.data || [], currentSession.user.id, cancelled);
     } finally {
       if (!cancelled) setDataLoading(false);
     }
+  }
+
+  async function hydrateFriendships(friendships, userId, cancelled = false) {
+    const otherIds = [...new Set(friendships.map((item) => item.requester_id === userId ? item.recipient_id : item.requester_id))];
+    if (!otherIds.length) {
+      if (!cancelled) setFriends([]);
+      return;
+    }
+
+    const { data, error } = await supabase
+      .from("profiles")
+      .select("id,name,surname,nickname,club,country,profile_photo_url")
+      .in("id", otherIds);
+
+    if (error) {
+      if (!cancelled) setStatus(error.message);
+      return;
+    }
+
+    const profilesById = new Map((data || []).map((profile) => [profile.id, profile]));
+    const nextFriends = friendships.map((friendship) => {
+      const otherId = friendship.requester_id === userId ? friendship.recipient_id : friendship.requester_id;
+      const otherProfile = profilesById.get(otherId) || {};
+      return {
+        ...friendship,
+        profile_id: otherId,
+        incoming: friendship.recipient_id === userId && friendship.status === "pending",
+        outgoing: friendship.requester_id === userId && friendship.status === "pending",
+        accepted: friendship.status === "accepted",
+        profile: otherProfile
+      };
+    });
+
+    if (!cancelled) setFriends(nextFriends);
   }
 
   async function signIn(provider) {
@@ -502,6 +549,80 @@ export default function HomePage() {
     await loadAppData(session);
   }
 
+  async function searchFriends(query) {
+    if (!session?.user) return;
+    const term = query.trim();
+    setFriendSearchRan(true);
+    setStatus("");
+
+    if (!term) {
+      setFriendResults([]);
+      return;
+    }
+
+    const safeTerm = term.replaceAll("%", "").replaceAll(",", " ");
+    const { data, error } = await supabase
+      .from("profiles")
+      .select("id,name,surname,nickname,club,country,profile_photo_url")
+      .neq("id", session.user.id)
+      .or(`name.ilike.%${safeTerm}%,surname.ilike.%${safeTerm}%,nickname.ilike.%${safeTerm}%,club.ilike.%${safeTerm}%`)
+      .limit(10);
+
+    if (error) {
+      setStatus(error.message);
+      setFriendResults([]);
+      return;
+    }
+
+    const knownIds = new Set(friends.map((friend) => friend.profile_id));
+    setFriendResults((data || []).map((profile) => ({ ...profile, alreadyKnown: knownIds.has(profile.id) })));
+  }
+
+  async function sendFriendRequest(profileId) {
+    if (!session?.user) return;
+    setSaving(true);
+    setStatus("");
+
+    const { error } = await supabase.from("friendships").insert({
+      requester_id: session.user.id,
+      recipient_id: profileId,
+      status: "pending"
+    });
+
+    setSaving(false);
+
+    if (error) {
+      setStatus(error.message);
+      return;
+    }
+
+    setFriendResults((current) => current.map((profile) => profile.id === profileId ? { ...profile, alreadyKnown: true } : profile));
+    setStatus("Friend request sent.");
+    await loadAppData(session);
+  }
+
+  async function acceptFriendRequest(friendshipId) {
+    if (!session?.user) return;
+    setSaving(true);
+    setStatus("");
+
+    const { error } = await supabase
+      .from("friendships")
+      .update({ status: "accepted" })
+      .eq("id", friendshipId)
+      .eq("recipient_id", session.user.id);
+
+    setSaving(false);
+
+    if (error) {
+      setStatus(error.message);
+      return;
+    }
+
+    setStatus("Friend request accepted.");
+    await loadAppData(session);
+  }
+
   const profileComplete = useMemo(() => isProfileComplete(profile), [profile]);
 
   if (loading) {
@@ -561,6 +682,9 @@ export default function HomePage() {
             exercises={exercises}
             lifts={lifts}
             workouts={workouts}
+            friends={friends}
+            friendResults={friendResults}
+            friendSearchRan={friendSearchRan}
             dataLoading={dataLoading}
             saving={saving}
             status={status}
@@ -577,6 +701,9 @@ export default function HomePage() {
             onSaveWorkout={saveWorkout}
             onUpdateWorkout={updateWorkout}
             onDeleteWorkout={deleteWorkout}
+            onSearchFriends={searchFriends}
+            onSendFriendRequest={sendFriendRequest}
+            onAcceptFriendRequest={acceptFriendRequest}
             onProgressExerciseChange={setProgressExerciseId}
             onProgressModeChange={setProgressMode}
             onSaveLift={saveLift}
@@ -589,6 +716,7 @@ export default function HomePage() {
         <nav className="bottom-nav" aria-label="Main navigation">
           {NAV.map((item) => (
             <button key={item} className={tab === item ? "active" : ""} onClick={() => setTab(item)}>
+              {item === "Friends" && friends.some((friend) => friend.incoming) ? <span className="nav-dot" aria-hidden="true" /> : null}
               <span>{item}</span>
             </button>
           ))}
@@ -604,6 +732,9 @@ function Dashboard({
   exercises,
   lifts,
   workouts,
+  friends,
+  friendResults,
+  friendSearchRan,
   dataLoading,
   saving,
   status,
@@ -620,6 +751,9 @@ function Dashboard({
   onSaveWorkout,
   onUpdateWorkout,
   onDeleteWorkout,
+  onSearchFriends,
+  onSendFriendRequest,
+  onAcceptFriendRequest,
   onProgressExerciseChange,
   onProgressModeChange,
   onSaveLift,
@@ -684,6 +818,23 @@ function Dashboard({
         onSaveWorkout={onSaveWorkout}
         onUpdateWorkout={onUpdateWorkout}
         onDeleteWorkout={onDeleteWorkout}
+      />
+    );
+  }
+
+  if (tab === "Friends") {
+    return (
+      <FriendsPanel
+        profile={profile}
+        lifts={lifts}
+        friends={friends}
+        friendResults={friendResults}
+        friendSearchRan={friendSearchRan}
+        saving={saving}
+        status={status}
+        onSearchFriends={onSearchFriends}
+        onSendFriendRequest={onSendFriendRequest}
+        onAcceptFriendRequest={onAcceptFriendRequest}
       />
     );
   }
@@ -1189,6 +1340,125 @@ function WorkoutPanel({
   );
 }
 
+function FriendsPanel({
+  lifts,
+  friends,
+  friendResults,
+  friendSearchRan,
+  saving,
+  status,
+  onSearchFriends,
+  onSendFriendRequest,
+  onAcceptFriendRequest
+}) {
+  const [query, setQuery] = useState("");
+  const incoming = friends.filter((friend) => friend.incoming);
+  const sent = friends.filter((friend) => friend.outgoing);
+  const accepted = friends.filter((friend) => friend.accepted);
+  const friendFeed = lifts.filter((lift) => lift.is_pr && friends.some((friend) => friend.accepted && friend.profile_id === lift.user_id));
+
+  function submit(event) {
+    event.preventDefault();
+    onSearchFriends(query);
+  }
+
+  return (
+    <section className="panel">
+      <div className="section-head">
+        <div>
+          <h1>Friends</h1>
+          <p className="muted">Search, request, accept, and view friends&apos; PRs.</p>
+        </div>
+      </div>
+
+      <div className="split">
+        <div>
+          <h2>Find friends</h2>
+          <form className="form" onSubmit={submit}>
+            <Field label="Name, nickname, or club" required>
+              <input required value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Alex" />
+            </Field>
+            <button className="btn" type="submit">Find</button>
+          </form>
+          <div className="list inset-list">
+            {friendResults.map((result) => (
+              <article className="lift-row" key={result.id}>
+                <div>
+                  <div className="lift-title">{displayPerson(result)}</div>
+                  <div className="meta">{[result.club, countryName(result.country)].filter(Boolean).join(" · ") || "Profile"}</div>
+                </div>
+                <div className="actions">
+                  {result.alreadyKnown ? <span className="badge blue">Requested</span> : (
+                    <button className="btn secondary" disabled={saving} type="button" onClick={() => onSendFriendRequest(result.id)}>Add friend</button>
+                  )}
+                </div>
+              </article>
+            ))}
+            {!friendResults.length && friendSearchRan ? <p className="empty">No users found for &quot;{query}&quot;.</p> : null}
+            {!friendResults.length && !friendSearchRan ? <p className="empty">Search results will appear here.</p> : null}
+          </div>
+        </div>
+
+        <div>
+          <h2>Requests</h2>
+          <div className="list">
+            {incoming.map((friend) => (
+              <FriendRow key={friend.id} friend={friend} action={<button className="btn secondary" disabled={saving} type="button" onClick={() => onAcceptFriendRequest(friend.id)}>Accept</button>} />
+            ))}
+            {!incoming.length ? <p className="empty">No incoming requests.</p> : null}
+          </div>
+
+          <h2>Friends</h2>
+          <div className="list">
+            {accepted.map((friend) => <FriendRow key={friend.id} friend={friend} action={<span className="badge">Friends</span>} />)}
+            {!accepted.length ? <p className="empty">Accepted friends will appear here.</p> : null}
+          </div>
+
+          {sent.length ? (
+            <>
+              <h2>Sent</h2>
+              <div className="list">
+                {sent.map((friend) => <FriendRow key={friend.id} friend={friend} action={<span className="badge blue">Sent</span>} />)}
+              </div>
+            </>
+          ) : null}
+        </div>
+      </div>
+
+      {status ? <p className="status">{status}</p> : null}
+
+      <h2>Friends&apos; recent PRs</h2>
+      {friendFeed.length ? (
+        <div className="list">
+          {friendFeed.slice(0, 10).map((lift) => (
+            <article className="lift-row" key={lift.id}>
+              <div>
+                <div className="lift-title">{lift.exercises?.name || "Exercise"} <span className="badge">PR</span></div>
+                <div className="meta">{displayWeight(lift.normalized_weight_kg)} · {lift.reps} rep{Number(lift.reps) === 1 ? "" : "s"} · {displayDate(lift.date)}</div>
+                {lift.notes ? <p>{lift.notes}</p> : null}
+              </div>
+            </article>
+          ))}
+        </div>
+      ) : (
+        <p className="empty">Accepted friends&apos; PRs will appear here.</p>
+      )}
+    </section>
+  );
+}
+
+function FriendRow({ friend, action }) {
+  return (
+    <article className="lift-row">
+      <div>
+        <div className="lift-title">{displayPerson(friend.profile)}</div>
+        <div className="meta">{[friend.profile?.club, countryName(friend.profile?.country)].filter(Boolean).join(" · ") || "Profile"}</div>
+      </div>
+      <div className="actions">{action}</div>
+    </article>
+  );
+}
+
 function ProgressChart({ lifts, unit, mode }) {
   const width = 760;
   const height = 320;
@@ -1467,6 +1737,7 @@ function birthdayToIso(value) {
 }
 
 function countryName(code) {
+  if (!code) return "";
   return COUNTRIES.find(([value]) => value === code)?.[1] || code;
 }
 
@@ -1474,4 +1745,10 @@ function privacyLabel(value) {
   if (value === "private") return "Only me";
   if (value === "public") return "Public";
   return "Friends only";
+}
+
+function displayPerson(profile) {
+  if (!profile) return "User";
+  const primary = profile.nickname || [profile.name, profile.surname].filter(Boolean).join(" ");
+  return primary || "User";
 }
