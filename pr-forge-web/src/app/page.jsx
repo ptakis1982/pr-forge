@@ -59,30 +59,29 @@ export default function HomePage() {
     let cancelled = false;
 
     async function init() {
-      const { data } = await supabase.auth.getSession();
-      if (cancelled) return;
-      setSession(data.session);
-      if (data.session) {
-        await loadProfile(data.session);
-        await loadAppData(data.session);
+      try {
+        const { data } = await supabase.auth.getSession();
+        if (!cancelled) setSession(data.session);
+      } catch (error) {
+        if (!cancelled) {
+          setStatus(error.message || "Could not check session.");
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
       }
-      setLoading(false);
     }
 
     init();
 
-    const { data: listener } = supabase.auth.onAuthStateChange(async (_event, nextSession) => {
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
       setSession(nextSession);
       setStatus("");
-      if (nextSession) {
-        await loadProfile(nextSession);
-        await loadAppData(nextSession);
-      } else {
+      setLoading(false);
+      if (!nextSession) {
         setProfile(null);
         setExercises([]);
         setLifts([]);
       }
-      setLoading(false);
     });
 
     return () => {
@@ -91,7 +90,27 @@ export default function HomePage() {
     };
   }, []);
 
-  async function loadProfile(currentSession = session) {
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadSessionData() {
+      if (!session?.user) return;
+      try {
+        await loadProfile(session, cancelled);
+        await loadAppData(session, cancelled);
+      } catch (error) {
+        if (!cancelled) setStatus(error.message || "Could not load app data.");
+      }
+    }
+
+    loadSessionData();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [session?.user?.id]);
+
+  async function loadProfile(currentSession = session, cancelled = false) {
     if (!currentSession?.user) return;
     const { data, error } = await supabase
       .from("profiles")
@@ -100,39 +119,45 @@ export default function HomePage() {
       .maybeSingle();
 
     if (error) {
-      setStatus(error.message);
-      setProfile(profileFromAuth(currentSession.user));
+      if (!cancelled) {
+        setStatus(error.message);
+        setProfile(profileFromAuth(currentSession.user));
+      }
       return;
     }
 
-    setProfile(data ? profileFromRow(data) : profileFromAuth(currentSession.user));
+    if (!cancelled) setProfile(data ? profileFromRow(data) : profileFromAuth(currentSession.user));
   }
 
-  async function loadAppData(currentSession = session) {
+  async function loadAppData(currentSession = session, cancelled = false) {
     if (!currentSession?.user) return;
-    setDataLoading(true);
+    if (!cancelled) setDataLoading(true);
 
-    const [exerciseResult, liftResult] = await Promise.all([
-      supabase
-        .from("exercises")
-        .select("id,name,slug,lift_type,description,is_global,owner_user_id")
-        .order("is_global", { ascending: false })
-        .order("name", { ascending: true }),
-      supabase
-        .from("lift_entries")
-        .select("*, exercises(name)")
-        .eq("user_id", currentSession.user.id)
-        .order("date", { ascending: false })
-        .order("created_at", { ascending: false })
-    ]);
+    try {
+      const [exerciseResult, liftResult] = await Promise.all([
+        supabase
+          .from("exercises")
+          .select("id,name,slug,lift_type,description,is_global,owner_user_id")
+          .order("is_global", { ascending: false })
+          .order("name", { ascending: true }),
+        supabase
+          .from("lift_entries")
+          .select("*, exercises(name)")
+          .eq("user_id", currentSession.user.id)
+          .order("date", { ascending: false })
+          .order("created_at", { ascending: false })
+      ]);
 
-    if (exerciseResult.error) setStatus(exerciseResult.error.message);
-    else setExercises(exerciseResult.data || []);
+      if (cancelled) return;
 
-    if (liftResult.error) setStatus(liftResult.error.message);
-    else setLifts(liftResult.data || []);
+      if (exerciseResult.error) setStatus(exerciseResult.error.message);
+      else setExercises(exerciseResult.data || []);
 
-    setDataLoading(false);
+      if (liftResult.error) setStatus(liftResult.error.message);
+      else setLifts(liftResult.data || []);
+    } finally {
+      if (!cancelled) setDataLoading(false);
+    }
   }
 
   async function signIn(provider) {
