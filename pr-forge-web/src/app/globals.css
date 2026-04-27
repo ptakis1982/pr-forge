@@ -120,6 +120,27 @@ button:disabled {
   margin: 0;
 }
 
+.home-identity {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.profile-avatar {
+  width: 58px;
+  height: 58px;
+  border-radius: 8px;
+  object-fit: cover;
+  background: var(--accent);
+  color: white;
+}
+
+.fallback-avatar {
+  display: grid;
+  place-items: center;
+  font-weight: 900;
+}
+
 .section-head.subhead {
   margin-top: 18px;
 }
@@ -310,7 +331,7 @@ button:disabled {
 
 .workout-round {
   display: grid;
-  grid-template-columns: 34px minmax(110px, 0.8fr) minmax(84px, 0.55fr) minmax(110px, 0.75fr) minmax(160px, 1fr) 44px;
+  grid-template-columns: 34px minmax(120px, 1fr) minmax(90px, 0.65fr) minmax(120px, 0.85fr) 44px;
   gap: 10px;
   align-items: end;
   padding: 12px;
@@ -396,7 +417,7 @@ button:disabled {
   display: grid;
   place-items: center;
   align-content: center;
-  gap: 2px;
+  gap: 3px;
   min-height: 56px;
   border-radius: 14px;
   background: transparent;
@@ -408,6 +429,16 @@ button:disabled {
 .bottom-nav button.active {
   background: var(--accent);
   color: white;
+}
+
+.nav-icon {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .nav-dot {
@@ -434,8 +465,7 @@ button:disabled {
     grid-template-columns: 34px 1fr 1fr;
   }
 
-  .workout-round .target-weight,
-  .workout-round .field:last-of-type {
+  .workout-round .target-weight {
     grid-column: 2 / -1;
   }
 

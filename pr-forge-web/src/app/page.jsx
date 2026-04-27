@@ -6,6 +6,16 @@ import { displayDate, displayWeight, estimatedMaxKg, kg } from "@/lib/format";
 
 const NAV = ["Home", "Add", "History", "Progress", "Workout", "Friends", "Profile"];
 
+const NAV_ICONS = {
+  Home: "M4 11.5 12 5l8 6.5V20a1 1 0 0 1-1 1h-5v-6h-4v6H5a1 1 0 0 1-1-1v-8.5Z",
+  Add: "M12 5v14M5 12h14",
+  History: "M5 6h14M5 12h14M5 18h14",
+  Progress: "M5 17l5-5 4 4 5-8M15 8h4v4",
+  Workout: "M4 9h3v6H4V9Zm13 0h3v6h-3V9ZM7 12h10",
+  Friends: "M8.5 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6Zm7 0a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5ZM3.5 20a5 5 0 0 1 10 0M12 20a4 4 0 0 1 8 0",
+  Profile: "M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm-7 8a7 7 0 0 1 14 0"
+};
+
 const COUNTRIES = [
   ["LT", "Lithuania"],
   ["LV", "Latvia"],
@@ -55,6 +65,7 @@ export default function HomePage() {
   const [likeCounts, setLikeCounts] = useState({});
   const [likedLifts, setLikedLifts] = useState({});
   const [comments, setComments] = useState({});
+  const [socialActivityAt, setSocialActivityAt] = useState({});
   const [friendResults, setFriendResults] = useState([]);
   const [friendSearchRan, setFriendSearchRan] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -66,6 +77,7 @@ export default function HomePage() {
   const [progressMode, setProgressMode] = useState("actual");
   const [editingWorkoutId, setEditingWorkoutId] = useState("");
   const [status, setStatus] = useState("");
+  const [historySeenAt, setHistorySeenAt] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -99,6 +111,7 @@ export default function HomePage() {
         setLikeCounts({});
         setLikedLifts({});
         setComments({});
+        setSocialActivityAt({});
         setFriendResults([]);
       }
     });
@@ -108,6 +121,17 @@ export default function HomePage() {
       listener.subscription.unsubscribe();
     };
   }, []);
+
+  useEffect(() => {
+    setHistorySeenAt(window.localStorage.getItem("pr_forge_history_seen_at") || "");
+  }, []);
+
+  useEffect(() => {
+    if (tab !== "History") return;
+    const now = new Date().toISOString();
+    window.localStorage.setItem("pr_forge_history_seen_at", now);
+    setHistorySeenAt(now);
+  }, [tab]);
 
   useEffect(() => {
     let cancelled = false;
@@ -281,7 +305,7 @@ export default function HomePage() {
     }
 
     const [likesResult, commentsResult] = await Promise.all([
-      supabase.from("likes").select("lift_entry_id,user_id").in("lift_entry_id", liftIds),
+      supabase.from("likes").select("lift_entry_id,user_id,created_at").in("lift_entry_id", liftIds),
       supabase.from("comments").select("id,lift_entry_id,user_id,body,created_at,profiles(name,surname,nickname)").in("lift_entry_id", liftIds).order("created_at", { ascending: true })
     ]);
 
@@ -290,20 +314,30 @@ export default function HomePage() {
     if (!likesResult.error) {
       const counts = {};
       const liked = {};
+      const activity = {};
       (likesResult.data || []).forEach((like) => {
         counts[like.lift_entry_id] = (counts[like.lift_entry_id] || 0) + 1;
         if (like.user_id === userId) liked[like.lift_entry_id] = true;
+        if (like.user_id !== userId && like.created_at) {
+          activity[like.lift_entry_id] = latestIso(activity[like.lift_entry_id], like.created_at);
+        }
       });
       setLikeCounts((current) => reset ? counts : { ...current, ...counts });
       setLikedLifts((current) => reset ? liked : { ...current, ...liked });
+      setSocialActivityAt((current) => reset ? activity : { ...current, ...activity });
     }
 
     if (!commentsResult.error) {
       const grouped = {};
+      const activity = {};
       (commentsResult.data || []).forEach((comment) => {
         grouped[comment.lift_entry_id] = [...(grouped[comment.lift_entry_id] || []), comment];
+        if (comment.user_id !== userId && comment.created_at) {
+          activity[comment.lift_entry_id] = latestIso(activity[comment.lift_entry_id], comment.created_at);
+        }
       });
       setComments((current) => reset ? grouped : { ...current, ...grouped });
+      setSocialActivityAt((current) => reset ? { ...current, ...activity } : { ...current, ...activity });
     }
   }
 
@@ -542,7 +576,7 @@ export default function HomePage() {
       percentage: Number(round.percentage),
       reps: round.reps ? Number(round.reps) : null,
       target_weight: roundedWorkoutWeight(form.base_weight, round.percentage, form.rounding),
-      notes: cleanOptional(round.notes)
+      notes: null
     }));
 
     const { error: roundsError } = await supabase.from("workout_rounds").insert(roundPayload);
@@ -595,7 +629,7 @@ export default function HomePage() {
       percentage: Number(round.percentage),
       reps: round.reps ? Number(round.reps) : null,
       target_weight: roundedWorkoutWeight(form.base_weight, round.percentage, form.rounding),
-      notes: cleanOptional(round.notes)
+      notes: null
     }));
 
     const { error: roundsError } = await supabase.from("workout_rounds").insert(roundPayload);
@@ -767,6 +801,15 @@ export default function HomePage() {
   }
 
   const profileComplete = useMemo(() => isProfileComplete(profile), [profile]);
+  const historyHasNewActivity = useMemo(() => {
+    const ownLiftIds = new Set(lifts.map((lift) => lift.id));
+    const latest = Object.entries(socialActivityAt)
+      .filter(([liftId]) => ownLiftIds.has(liftId))
+      .map(([, value]) => value)
+      .sort()
+      .at(-1);
+    return Boolean(latest && (!historySeenAt || latest > historySeenAt));
+  }, [historySeenAt, lifts, socialActivityAt]);
 
   if (loading) {
     return <Centered message="Checking session..." />;
@@ -811,7 +854,7 @@ export default function HomePage() {
         ) : tab === "Profile" ? (
           <ProfilePanel
             title="Profile"
-            description="OAuth-only account details and default privacy."
+            description="Manage your lifting profile, club, and privacy."
             profile={profile}
             saving={saving}
             status={status}
@@ -866,7 +909,9 @@ export default function HomePage() {
         <nav className="bottom-nav" aria-label="Main navigation">
           {NAV.map((item) => (
             <button key={item} className={tab === item ? "active" : ""} onClick={() => setTab(item)}>
+              {item === "History" && historyHasNewActivity ? <span className="nav-dot" aria-hidden="true" /> : null}
               {item === "Friends" && friends.some((friend) => friend.incoming) ? <span className="nav-dot" aria-hidden="true" /> : null}
+              <NavIcon name={item} />
               <span>{item}</span>
             </button>
           ))}
@@ -1029,6 +1074,14 @@ function Dashboard({
   );
 }
 
+function NavIcon({ name }) {
+  return (
+    <svg className="nav-icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d={NAV_ICONS[name]} />
+    </svg>
+  );
+}
+
 function HomeDashboard({ profile, lifts, workouts, feedLifts, onOpenHistory, onOpenFriends, onSignOut }) {
   const recentPrs = lifts.filter((lift) => lift.is_pr).slice(0, 3);
   const friendPrs = feedLifts.slice(0, 3);
@@ -1038,9 +1091,12 @@ function HomeDashboard({ profile, lifts, workouts, feedLifts, onOpenHistory, onO
     <div className="grid">
       <section className="panel">
         <div className="section-head">
-          <div>
-            <h1>Home</h1>
-            <p className="muted">Welcome back, {profile.nickname || profile.name}.</p>
+          <div className="home-identity">
+            <ProfileAvatar profile={profile} />
+            <div>
+              <h1>Home</h1>
+              <p className="muted">Welcome back, {profile.nickname || profile.name}.</p>
+            </div>
           </div>
           <button className="btn secondary" onClick={onSignOut}>Sign out</button>
         </div>
@@ -1097,6 +1153,22 @@ function HomeDashboard({ profile, lifts, workouts, feedLifts, onOpenHistory, onO
       </section>
     </div>
   );
+}
+
+function ProfileAvatar({ profile }) {
+  const initials = (profile.nickname || `${profile.name || ""} ${profile.surname || ""}`)
+    .trim()
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((part) => part[0])
+    .join("")
+    .toUpperCase() || "PR";
+
+  if (profile.profile_photo_url) {
+    return <img className="profile-avatar" src={profile.profile_photo_url} alt="" />;
+  }
+
+  return <div className="profile-avatar fallback-avatar">{initials}</div>;
 }
 
 function CompactLiftRow({ lift, unit, showPerson = false }) {
@@ -1480,7 +1552,7 @@ function WorkoutPanel({
   function addRound() {
     setForm((current) => ({
       ...current,
-      rounds: [...current.rounds, { id: `round_${Date.now()}`, percentage: "", reps: "", notes: "" }]
+      rounds: [...current.rounds, { id: `round_${Date.now()}`, percentage: "", reps: "" }]
     }));
   }
 
@@ -1534,6 +1606,9 @@ function WorkoutPanel({
           </select>
         </Field>
       </div>
+      <Field label="Workout note">
+        <textarea value={form.notes} onChange={(event) => update("notes", event.target.value)} placeholder="Example: squat with 3 s pause at the bottom" />
+      </Field>
 
       <div className="section-head subhead">
         <h2>Rounds</h2>
@@ -1567,9 +1642,6 @@ function WorkoutPanel({
                 <span>Target</span>
                 <strong>{target ? `${target} ${form.unit}` : "-"}</strong>
               </div>
-              <Field label="Notes">
-                <input value={round.notes} onChange={(event) => updateRound(round.id, "notes", event.target.value)} />
-              </Field>
               <button className="btn secondary icon-btn" type="button" onClick={() => removeRound(round.id)}>x</button>
             </div>
           );
@@ -1588,6 +1660,7 @@ function WorkoutPanel({
                 <span>Base {workout.base_weight} {workout.unit}</span>
                 <span>{workout.workout_rounds?.length || 0} round{(workout.workout_rounds?.length || 0) === 1 ? "" : "s"}</span>
               </div>
+              {workout.notes ? <p>{workout.notes}</p> : null}
               <p>{(workout.workout_rounds || []).map((round) => `${round.percentage}% -> ${round.target_weight} ${workout.unit}`).join(", ")}</p>
               <div className="actions">
                 <button className="btn secondary" type="button" onClick={() => onEditWorkout(workout.id)}>Edit</button>
@@ -2009,6 +2082,11 @@ function bestTrainingBase(lifts, exerciseId, unit) {
   return Math.round(value * 10) / 10;
 }
 
+function latestIso(current, next) {
+  if (!current) return next;
+  return next > current ? next : current;
+}
+
 function trainingNudge(lifts) {
   const prs = lifts
     .filter((lift) => lift.is_pr)
@@ -2040,8 +2118,7 @@ function workoutFormFromSource(workout, exerciseId, baseWeight, profile, existin
       rounds: (workout.workout_rounds || []).map((round) => ({
         id: round.id,
         percentage: round.percentage,
-        reps: round.reps || "",
-        notes: round.notes || ""
+        reps: round.reps || ""
       }))
     };
   }
@@ -2054,10 +2131,10 @@ function workoutFormFromSource(workout, exerciseId, baseWeight, profile, existin
     visibility: profile.privacy_setting,
     notes: "",
     rounds: existingRounds?.length ? existingRounds : [
-      { id: "round_1", percentage: 50, reps: "", notes: "" },
-      { id: "round_2", percentage: 60, reps: "", notes: "" },
-      { id: "round_3", percentage: 70, reps: "", notes: "" },
-      { id: "round_4", percentage: 80, reps: "", notes: "" }
+      { id: "round_1", percentage: 50, reps: "" },
+      { id: "round_2", percentage: 60, reps: "" },
+      { id: "round_3", percentage: 70, reps: "" },
+      { id: "round_4", percentage: 80, reps: "" }
     ]
   };
 }
