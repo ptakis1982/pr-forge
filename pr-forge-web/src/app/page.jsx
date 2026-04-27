@@ -53,6 +53,7 @@ export default function HomePage() {
   const [dataLoading, setDataLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [tab, setTab] = useState("Home");
+  const [editingLiftId, setEditingLiftId] = useState("");
   const [progressExerciseId, setProgressExerciseId] = useState("");
   const [progressMode, setProgressMode] = useState("actual");
   const [status, setStatus] = useState("");
@@ -261,6 +262,101 @@ export default function HomePage() {
     await loadAppData(session);
   }
 
+  async function updateLift(liftId, form) {
+    if (!session?.user || !profile) return;
+    setSaving(true);
+    setStatus("");
+
+    const normalizedWeightKg = kg(form.weight, form.unit);
+    const reps = Number(form.reps);
+    const payload = {
+      exercise_id: form.exercise_id,
+      date: form.date,
+      weight: Number(form.weight),
+      unit: form.unit,
+      normalized_weight_kg: normalizedWeightKg,
+      reps,
+      percentage_of_max: form.percentage_of_max ? Number(form.percentage_of_max) : null,
+      estimated_1rm_kg: estimatedMaxKg(normalizedWeightKg, reps, form.percentage_of_max),
+      notes: cleanOptional(form.notes),
+      location: cleanOptional(form.location),
+      bodyweight: form.bodyweight ? Number(form.bodyweight) : null,
+      bodyweight_unit: profile.preferred_unit,
+      straps_used: form.straps_used === "yes",
+      visibility: form.visibility
+    };
+
+    const { error } = await supabase
+      .from("lift_entries")
+      .update(payload)
+      .eq("id", liftId)
+      .eq("user_id", session.user.id);
+
+    setSaving(false);
+
+    if (error) {
+      setStatus(error.message);
+      return;
+    }
+
+    setEditingLiftId("");
+    setStatus("Lift updated.");
+    await loadAppData(session);
+    await recomputePrFlags(session);
+    await loadAppData(session);
+  }
+
+  async function deleteLift(liftId) {
+    if (!session?.user) return;
+    setSaving(true);
+    setStatus("");
+
+    const { error } = await supabase
+      .from("lift_entries")
+      .delete()
+      .eq("id", liftId)
+      .eq("user_id", session.user.id);
+
+    setSaving(false);
+
+    if (error) {
+      setStatus(error.message);
+      return;
+    }
+
+    setEditingLiftId("");
+    setStatus("Lift deleted.");
+    await loadAppData(session);
+    await recomputePrFlags(session);
+    await loadAppData(session);
+  }
+
+  async function recomputePrFlags(currentSession = session) {
+    if (!currentSession?.user) return;
+    const { data, error } = await supabase
+      .from("lift_entries")
+      .select("id,exercise_id,reps,normalized_weight_kg,date,created_at")
+      .eq("user_id", currentSession.user.id)
+      .order("date", { ascending: true })
+      .order("created_at", { ascending: true });
+
+    if (error) {
+      setStatus(error.message);
+      return;
+    }
+
+    const best = {};
+    const updates = (data || []).map((lift) => {
+      const key = `${lift.exercise_id}:${lift.reps}`;
+      const previousBest = best[key] || 0;
+      const isPr = Number(lift.normalized_weight_kg) > previousBest;
+      best[key] = Math.max(previousBest, Number(lift.normalized_weight_kg));
+      return supabase.from("lift_entries").update({ is_pr: isPr }).eq("id", lift.id).eq("user_id", currentSession.user.id);
+    });
+
+    await Promise.all(updates);
+  }
+
   const profileComplete = useMemo(() => isProfileComplete(profile), [profile]);
 
   if (loading) {
@@ -322,8 +418,13 @@ export default function HomePage() {
             dataLoading={dataLoading}
             saving={saving}
             status={status}
+            editingLiftId={editingLiftId}
             progressExerciseId={progressExerciseId}
             progressMode={progressMode}
+            onEditLift={setEditingLiftId}
+            onCancelEditLift={() => setEditingLiftId("")}
+            onUpdateLift={updateLift}
+            onDeleteLift={deleteLift}
             onProgressExerciseChange={setProgressExerciseId}
             onProgressModeChange={setProgressMode}
             onSaveLift={saveLift}
@@ -353,8 +454,13 @@ function Dashboard({
   dataLoading,
   saving,
   status,
+  editingLiftId,
   progressExerciseId,
   progressMode,
+  onEditLift,
+  onCancelEditLift,
+  onUpdateLift,
+  onDeleteLift,
   onProgressExerciseChange,
   onProgressModeChange,
   onSaveLift,
@@ -373,7 +479,21 @@ function Dashboard({
   }
 
   if (tab === "History") {
-    return <HistoryPanel profile={profile} lifts={lifts} dataLoading={dataLoading} />;
+    return (
+      <HistoryPanel
+        profile={profile}
+        exercises={exercises}
+        lifts={lifts}
+        dataLoading={dataLoading}
+        saving={saving}
+        status={status}
+        editingLiftId={editingLiftId}
+        onEditLift={onEditLift}
+        onCancelEditLift={onCancelEditLift}
+        onUpdateLift={onUpdateLift}
+        onDeleteLift={onDeleteLift}
+      />
+    );
   }
 
   if (tab === "Progress") {
@@ -523,7 +643,19 @@ function AddLiftPanel({ profile, exercises, saving, status, onSaveLift }) {
   );
 }
 
-function HistoryPanel({ profile, lifts, dataLoading }) {
+function HistoryPanel({
+  profile,
+  exercises,
+  lifts,
+  dataLoading,
+  saving,
+  status,
+  editingLiftId,
+  onEditLift,
+  onCancelEditLift,
+  onUpdateLift,
+  onDeleteLift
+}) {
   return (
     <section className="panel">
       <div className="section-head">
@@ -535,27 +667,128 @@ function HistoryPanel({ profile, lifts, dataLoading }) {
 
       {dataLoading ? <p className="muted">Loading lifts...</p> : null}
       {!dataLoading && !lifts.length ? <p className="empty">No lifts logged yet.</p> : null}
+      {status ? <p className="status">{status}</p> : null}
       <div className="list">
         {lifts.map((lift) => (
-          <article className="lift-row" key={lift.id}>
-            <div>
-              <div className="lift-title">
-                {lift.exercises?.name || "Exercise"}
-                {lift.is_pr ? <span className="badge">PR</span> : null}
-                <span className="badge blue">{privacyLabel(lift.visibility)}</span>
+          editingLiftId === lift.id ? (
+            <LiftEditRow
+              key={lift.id}
+              lift={lift}
+              profile={profile}
+              exercises={exercises}
+              saving={saving}
+              onCancel={onCancelEditLift}
+              onUpdate={onUpdateLift}
+              onDelete={onDeleteLift}
+            />
+          ) : (
+            <article className="lift-row" key={lift.id}>
+              <div>
+                <div className="lift-title">
+                  {lift.exercises?.name || "Exercise"}
+                  {lift.is_pr ? <span className="badge">PR</span> : null}
+                  <span className="badge blue">{privacyLabel(lift.visibility)}</span>
+                </div>
+                <div className="meta">
+                  <span>{displayWeight(lift.normalized_weight_kg, profile.preferred_unit)}</span>
+                  <span>{lift.reps} rep{Number(lift.reps) === 1 ? "" : "s"}</span>
+                  <span>{displayDate(lift.date)}</span>
+                  {lift.straps_used ? <span>Straps: yes</span> : <span>Straps: no</span>}
+                </div>
+                {lift.notes ? <p>{lift.notes}</p> : null}
+                <div className="actions">
+                  <button className="btn secondary" type="button" onClick={() => onEditLift(lift.id)}>Edit</button>
+                </div>
               </div>
-              <div className="meta">
-                <span>{displayWeight(lift.normalized_weight_kg, profile.preferred_unit)}</span>
-                <span>{lift.reps} rep{Number(lift.reps) === 1 ? "" : "s"}</span>
-                <span>{displayDate(lift.date)}</span>
-                {lift.straps_used ? <span>Straps: yes</span> : <span>Straps: no</span>}
-              </div>
-              {lift.notes ? <p>{lift.notes}</p> : null}
-            </div>
-          </article>
+            </article>
+          )
         ))}
       </div>
     </section>
+  );
+}
+
+function LiftEditRow({ lift, profile, exercises, saving, onCancel, onUpdate, onDelete }) {
+  const [form, setForm] = useState(() => ({
+    exercise_id: lift.exercise_id,
+    date: lift.date,
+    weight: lift.weight,
+    unit: lift.unit,
+    reps: lift.reps,
+    percentage_of_max: lift.percentage_of_max || "",
+    location: lift.location || "",
+    bodyweight: lift.bodyweight || "",
+    straps_used: lift.straps_used ? "yes" : "no",
+    notes: lift.notes || "",
+    visibility: lift.visibility
+  }));
+
+  function update(field, value) {
+    setForm((current) => ({ ...current, [field]: value }));
+  }
+
+  function submit(event) {
+    event.preventDefault();
+    onUpdate(lift.id, form);
+  }
+
+  return (
+    <article className="lift-row">
+      <form className="form" onSubmit={submit}>
+        <div className="split">
+          <Field label="Exercise" required>
+            <select required value={form.exercise_id} onChange={(event) => update("exercise_id", event.target.value)}>
+              {exercises.map((exercise) => <option key={exercise.id} value={exercise.id}>{exercise.name}</option>)}
+            </select>
+          </Field>
+          <Field label="Date" required>
+            <input required type="date" value={form.date} onChange={(event) => update("date", event.target.value)} />
+          </Field>
+          <Field label="Weight lifted" required>
+            <input required type="number" min="0.1" step="0.1" value={form.weight} onChange={(event) => update("weight", event.target.value)} />
+          </Field>
+          <Field label="Unit">
+            <select value={form.unit} onChange={(event) => update("unit", event.target.value)}>
+              <option value="kg">kg</option>
+              <option value="lb">lb</option>
+            </select>
+          </Field>
+          <Field label="Reps" required>
+            <input required type="number" min="1" step="1" value={form.reps} onChange={(event) => update("reps", event.target.value)} />
+          </Field>
+          <Field label="Percentage of max">
+            <input type="number" min="1" max="100" step="0.1" value={form.percentage_of_max} onChange={(event) => update("percentage_of_max", event.target.value)} />
+          </Field>
+          <Field label="Location, gym, or club">
+            <input value={form.location} onChange={(event) => update("location", event.target.value)} />
+          </Field>
+          <Field label="Bodyweight today">
+            <input type="number" min="1" step="0.1" value={form.bodyweight} onChange={(event) => update("bodyweight", event.target.value)} />
+          </Field>
+          <Field label="Were straps used?">
+            <select value={form.straps_used} onChange={(event) => update("straps_used", event.target.value)}>
+              <option value="no">No</option>
+              <option value="yes">Yes</option>
+            </select>
+          </Field>
+          <Field label="Visibility">
+            <select value={form.visibility} onChange={(event) => update("visibility", event.target.value)}>
+              <option value="private">Only me</option>
+              <option value="friends">Friends only</option>
+              <option value="public">Public</option>
+            </select>
+          </Field>
+        </div>
+        <Field label="Notes">
+          <textarea value={form.notes} onChange={(event) => update("notes", event.target.value)} />
+        </Field>
+        <div className="actions">
+          <button className="btn" disabled={saving} type="submit">{saving ? "Saving..." : "Save changes"}</button>
+          <button className="btn secondary" type="button" onClick={onCancel}>Cancel</button>
+          <button className="btn danger" disabled={saving} type="button" onClick={() => onDelete(lift.id)}>Delete lift</button>
+        </div>
+      </form>
+    </article>
   );
 }
 

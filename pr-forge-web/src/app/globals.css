@@ -282,6 +282,11 @@ button:disabled {
   color: var(--ink);
 }
 
+.btn.danger {
+  background: var(--danger);
+  color: white;
+}
+
 .bottom-nav {
   position: fixed;
   left: 50%;
