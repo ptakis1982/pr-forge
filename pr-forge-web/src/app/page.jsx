@@ -184,7 +184,11 @@ export default function HomePage() {
       else setExercises(exerciseResult.data || []);
 
       if (liftResult.error) setStatus(liftResult.error.message);
-      else setLifts(liftResult.data || []);
+      else {
+        const ownLifts = liftResult.data || [];
+        setLifts(ownLifts);
+        await loadSocialData(ownLifts.map((lift) => lift.id), currentSession.user.id, cancelled, true);
+      }
 
       if (workoutResult.error) setStatus(workoutResult.error.message);
       else setWorkouts((workoutResult.data || []).map(sortWorkoutRounds));
@@ -236,9 +240,6 @@ export default function HomePage() {
     if (!friendIds.length) {
       if (!cancelled) {
         setFeedLifts([]);
-        setLikeCounts({});
-        setLikedLifts({});
-        setComments({});
       }
       return;
     }
@@ -261,6 +262,17 @@ export default function HomePage() {
     if (!liftIds.length) {
       if (!cancelled) {
         setFeedLifts([]);
+      }
+      return;
+    }
+
+    if (!cancelled) setFeedLifts(data || []);
+    await loadSocialData(liftIds, userId, cancelled);
+  }
+
+  async function loadSocialData(liftIds, userId, cancelled = false, reset = false) {
+    if (!liftIds.length) {
+      if (!cancelled && reset) {
         setLikeCounts({});
         setLikedLifts({});
         setComments({});
@@ -275,8 +287,6 @@ export default function HomePage() {
 
     if (cancelled) return;
 
-    setFeedLifts(data || []);
-
     if (!likesResult.error) {
       const counts = {};
       const liked = {};
@@ -284,8 +294,8 @@ export default function HomePage() {
         counts[like.lift_entry_id] = (counts[like.lift_entry_id] || 0) + 1;
         if (like.user_id === userId) liked[like.lift_entry_id] = true;
       });
-      setLikeCounts(counts);
-      setLikedLifts(liked);
+      setLikeCounts((current) => reset ? counts : { ...current, ...counts });
+      setLikedLifts((current) => reset ? liked : { ...current, ...liked });
     }
 
     if (!commentsResult.error) {
@@ -293,7 +303,7 @@ export default function HomePage() {
       (commentsResult.data || []).forEach((comment) => {
         grouped[comment.lift_entry_id] = [...(grouped[comment.lift_entry_id] || []), comment];
       });
-      setComments(grouped);
+      setComments((current) => reset ? grouped : { ...current, ...grouped });
     }
   }
 
@@ -930,6 +940,11 @@ function Dashboard({
         onCancelEditLift={onCancelEditLift}
         onUpdateLift={onUpdateLift}
         onDeleteLift={onDeleteLift}
+        likeCounts={likeCounts}
+        likedLifts={likedLifts}
+        comments={comments}
+        onToggleLike={onToggleLike}
+        onPostComment={onPostComment}
       />
     );
   }
@@ -1135,7 +1150,12 @@ function HistoryPanel({
   onEditLift,
   onCancelEditLift,
   onUpdateLift,
-  onDeleteLift
+  onDeleteLift,
+  likeCounts,
+  likedLifts,
+  comments,
+  onToggleLike,
+  onPostComment
 }) {
   return (
     <section className="panel">
@@ -1180,6 +1200,14 @@ function HistoryPanel({
                 <div className="actions">
                   <button className="btn secondary" type="button" onClick={() => onEditLift(lift.id)}>Edit</button>
                 </div>
+                <LiftSocialControls
+                  liftId={lift.id}
+                  likeCount={likeCounts[lift.id] || 0}
+                  liked={Boolean(likedLifts[lift.id])}
+                  comments={comments[lift.id] || []}
+                  onToggleLike={onToggleLike}
+                  onPostComment={onPostComment}
+                />
               </div>
             </article>
           )
@@ -1615,6 +1643,30 @@ function FriendRow({ friend, action }) {
       </div>
       <div className="actions">{action}</div>
     </article>
+  );
+}
+
+function LiftSocialControls({ liftId, likeCount, liked, comments, onToggleLike, onPostComment }) {
+  const [comment, setComment] = useState("");
+
+  function submit(event) {
+    event.preventDefault();
+    onPostComment(liftId, comment);
+    setComment("");
+  }
+
+  return (
+    <div className="social-block">
+      <div className="meta">{likeCount} like{likeCount === 1 ? "" : "s"} Â· {comments.length} comment{comments.length === 1 ? "" : "s"}</div>
+      {comments.map((item) => (
+        <p className="comment" key={item.id}><strong>{displayPerson(item.profiles)}:</strong> {item.body}</p>
+      ))}
+      <form className="comment-form" onSubmit={submit}>
+        <input value={comment} onChange={(event) => setComment(event.target.value)} placeholder="Write a comment" />
+        <button className="btn secondary" type="submit">Post</button>
+        <button className="btn secondary" type="button" onClick={() => onToggleLike(liftId)}>{liked ? "Liked" : "Like"}</button>
+      </form>
+    </div>
   );
 }
 
